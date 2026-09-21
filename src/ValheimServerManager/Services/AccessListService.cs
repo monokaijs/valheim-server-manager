@@ -34,24 +34,33 @@ public sealed partial class AccessListService(IConfiguration config, AgentGatewa
 
     public async Task Add(string kind, string platformId)
     {
-        ValidateId(platformId);
+        var suppliedId = (platformId ?? "").Trim();
+        platformId = NormalizePlatformId(suppliedId);
         if (agent.IsConnected)
         {
             await agent.Command($"access.{kind}.add", new { platformId }, TimeSpan.FromSeconds(10));
             return;
         }
-        await MutateFile(kind, list => { if (!list.Contains(platformId, StringComparer.Ordinal)) list.Add(platformId); });
+        await MutateFile(kind, list =>
+        {
+            if (!suppliedId.Equals(platformId, StringComparison.Ordinal)) list.RemoveAll(x => x.Equals(suppliedId, StringComparison.Ordinal));
+            if (!list.Contains(platformId, StringComparer.Ordinal)) list.Add(platformId);
+        });
     }
 
     public async Task Remove(string kind, string platformId)
     {
-        ValidateId(platformId);
+        var suppliedId = (platformId ?? "").Trim();
+        platformId = NormalizePlatformId(suppliedId);
         if (agent.IsConnected)
         {
             await agent.Command($"access.{kind}.remove", new { platformId }, TimeSpan.FromSeconds(10));
+            if (!suppliedId.Equals(platformId, StringComparison.Ordinal))
+                await agent.Command($"access.{kind}.remove", new { platformId = suppliedId }, TimeSpan.FromSeconds(10));
             return;
         }
-        await MutateFile(kind, list => list.RemoveAll(x => x.Equals(platformId, StringComparison.Ordinal)));
+        await MutateFile(kind, list => list.RemoveAll(x =>
+            x.Equals(platformId, StringComparison.Ordinal) || x.Equals(suppliedId, StringComparison.Ordinal)));
     }
 
     private async Task MutateFile(string kind, Action<List<string>> mutate)
@@ -82,5 +91,12 @@ public sealed partial class AccessListService(IConfiguration config, AgentGatewa
     {
         if (string.IsNullOrWhiteSpace(value) || !IdPattern().IsMatch(value))
             throw new ArgumentException("Use an exact Platform_UserId or numeric Steam ID without spaces.");
+    }
+
+    internal static string NormalizePlatformId(string value)
+    {
+        value = (value ?? "").Trim();
+        ValidateId(value);
+        return SteamIdPattern().IsMatch(value) ? "Steam_" + value : value;
     }
 }

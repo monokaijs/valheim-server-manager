@@ -86,12 +86,7 @@ public sealed class JoinRequestService(IServiceScopeFactory scopes, IHttpContext
     }
 
     internal static string NormalizePlatformId(string value)
-    {
-        value = (value ?? "").Trim();
-        if (value.Length == 17 && value.All(char.IsDigit)) value = "Steam_" + value;
-        AccessListService.ValidateId(value);
-        return value;
-    }
+        => AccessListService.NormalizePlatformId(value);
 
     private static string NormalizeStatus(string value) => (value ?? "").Trim().ToLowerInvariant();
 }

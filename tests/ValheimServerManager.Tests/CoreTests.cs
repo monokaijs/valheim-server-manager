@@ -97,6 +97,16 @@ public sealed class CoreTests
     }
 
     [Theory]
+    [InlineData("76561198400688240", "Steam_76561198400688240")]
+    [InlineData("  76561198400688240  ", "Steam_76561198400688240")]
+    [InlineData("Steam_76561198400688240", "Steam_76561198400688240")]
+    [InlineData("PlayFab_UserAbc", "PlayFab_UserAbc")]
+    public void AccessLists_NormalizeNumericSteamIdentities(string input, string expected)
+    {
+        Assert.Equal(expected, AccessListService.NormalizePlatformId(input));
+    }
+
+    [Theory]
     [InlineData("")]
     [InlineData("Steam user")]
     [InlineData("../7656119")]
