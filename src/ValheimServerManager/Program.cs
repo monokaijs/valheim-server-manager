@@ -293,19 +293,9 @@ api.MapPost("/mods/upload", async (HttpRequest request, ModService mods, Cancell
     await using var stream = file.OpenReadStream();
     return Results.Ok(await mods.InstallUpload(stream, file.FileName, ct));
 }).RequireAntiforgery();
-api.MapGet("/downloads/client-companion", (IConfiguration configuration) =>
+api.MapGet("/downloads/plugin", (IConfiguration configuration) =>
 {
-    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManagerClient-1.4.9.zip");
-    return File.Exists(path) ? Results.File(path, "application/zip", Path.GetFileName(path)) : Results.NotFound();
-});
-api.MapGet("/downloads/server-agent", (IConfiguration configuration) =>
-{
-    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManagerServer-1.6.5.zip");
-    return File.Exists(path) ? Results.File(path, "application/zip", Path.GetFileName(path)) : Results.NotFound();
-});
-api.MapGet("/downloads/client-bootstrap", (IConfiguration configuration) =>
-{
-    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "XomNghien-ServerModBootstrap-2.2.0.zip");
+    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManager-1.6.6.zip");
     return File.Exists(path) ? Results.File(path, "application/zip", Path.GetFileName(path)) : Results.NotFound();
 });
 api.MapPost("/mods/{id:guid}/enable", async (Guid id, ModService mods, CancellationToken ct) => { await mods.SetEnabled(id, true, ct); return Results.NoContent(); }).RequireAntiforgery();

@@ -16,7 +16,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager.client";
     public const string PluginName = "Valheim Server Manager Client";
-    public const string PluginVersion = "1.4.9";
+    public const string PluginVersion = "1.6.6";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.client";
     internal static ClientPlugin Instance { get; private set; }
     private ConfigEntry<bool> _allowInventory;
@@ -42,6 +42,12 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void Awake()
     {
+        if (Application.isBatchMode)
+        {
+            Logger.LogInfo("Client runtime disabled in the dedicated-server process.");
+            enabled = false;
+            return;
+        }
         Instance = this;
         MigrateLegacyConfig();
         _allowInventory = Config.Bind("Privacy", "AllowInventoryInspection", false, "Allow this server's authenticated dashboard to request an on-demand inventory snapshot.");

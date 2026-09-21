@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.6
+
+- Unified server installation and the client update receiver into one Server Manager package and version.
+- Removed the separately branded bootstrap and companion downloads.
+- Kept the automatically relayed client runtime internal to Server Manager.
+
 ## 1.6.0
 
 - Added reasoned kick/ban actions, editable server message templates, and client-visible administrative notices.

@@ -4,7 +4,7 @@ schemaVersion = "0.0.1"
 [package]
 namespace = "Creaton"
 name = "Server_Manager"
-versionNumber = "1.6.0"
+versionNumber = "1.6.6"
 description = "Self-hosted Valheim server management agent with live administration, mod control, events, and server-owned characters."
 websiteUrl = "https://github.com/monokaijs/valheim-server-manager"
 containsNsfwContent = false
@@ -30,4 +30,4 @@ repository = "https://thunderstore.io"
 communities = ["valheim"]
 
 [publish.categories]
-valheim = ["server-side", "utility", "mods"]
+valheim = ["server-side", "client-side", "utility", "mods"]

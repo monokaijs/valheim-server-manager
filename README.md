@@ -1,16 +1,16 @@
 # Valheim Server Manager
 
-A self-hosted Valheim control plane with a web dashboard, live server agent, server-owned characters, package management, player moderation, outbound webhooks, and a privacy-aware client companion.
+A self-hosted Valheim control plane with a web dashboard, live server agent, server-owned characters, package management, player moderation, outbound webhooks, and a privacy-aware client runtime delivered by the same Server Manager package.
 
 ## Included
 
 - One-container Linux deployment that installs the dedicated server with SteamCMD and supervises it without access to the Docker socket.
 - React/shadcn dashboard based on the `dashboard-01` shell for status, online players, live character inspection, access lists, Thunderstore/manual mods, webhooks, safe console commands, and auditing.
 - BepInEx server agent built at startup against the exact installed Valheim assemblies.
-- Client companion required when server-owned characters are enabled. Dashboard inventory inspection and detailed telemetry remain independently disabled until the player opts in.
+- Server Manager client runtime required when server-owned characters are enabled. Dashboard inventory inspection and detailed telemetry remain independently disabled until the player opts in.
 - SQLite persistence, Steam OpenID authentication restricted to `adminlist.txt`, secure cookies, CSRF protection, login throttling, SignalR updates, signed webhook delivery, and automatic mod rollback.
 
-The mandatory server plugin identifier is `dev.creaton.valheim-server-manager`; the companion uses `dev.creaton.valheim-server-manager.client`. Older `dev.monokai.*` configuration files are copied forward automatically on first load and retained as rollback copies.
+The server plugin identifier is `dev.creaton.valheim-server-manager`; the automatically managed client runtime uses `dev.creaton.valheim-server-manager.client`. Older `dev.monokai.*` configuration files are copied forward automatically on first load and retained as rollback copies.
 
 ## Start
 
@@ -52,17 +52,17 @@ POST /api/external/v1/join-requests/{requestId}/deny
 
 The registration endpoint accepts a 17-digit Steam64 ID and normalizes it to Valheim's canonical `Steam_<id>` form. Tokens can be independently scoped to `whitelist.read`, `whitelist.write`, `join-requests.read`, and `join-requests.write`; they are rate-limited, revocable, and appear in the audit log as `api-token:<name>`.
 
-## One-package client bootstrap
+## One Server Manager package
 
 After the first successful container start, authenticated owners give players this one package:
 
 ```text
-/api/v1/downloads/client-bootstrap
+/api/v1/downloads/plugin
 ```
 
-Install bootstrap 2.2's ZIP through r2modman/Thunderstore Mod Manager or copy its `BepInEx` directory into the player's Valheim directory. On the first connection, server agent 1.6.5 relays a deterministic manifest containing the size- and SHA-256-verified embedded VSM client component 1.4.9 and every enabled Thunderstore mod marked **Required** in the Mods page. The bootstrap stages the packages, disconnects safely, and asks for one Valheim restart. The next connection runs the server's exact client mod set; there is no second mod for players to manage manually.
+Install the Server Manager ZIP through r2modman/Thunderstore Mod Manager or copy its `BepInEx` directory into Valheim. The same package is safe on dedicated servers and player clients: server-only code is disabled in the client process, while the client update receiver is disabled in the dedicated-server process. On the first connection, server agent 1.6.6 relays a deterministic manifest containing the size- and SHA-256-verified VSM client runtime and every enabled Thunderstore mod marked **Required** in the Mods page. Server Manager stages the client files, disconnects safely, and asks for one Valheim restart. The next connection runs the server's exact client mod set; there is no second VSM mod for players to install or publish.
 
-The bootstrap owns only `BepInEx/plugins/XomNghienManaged`; personal plugins are left alone. Manual ZIP uploads and protected infrastructure are server-only because the manager has no stable Thunderstore source for them. The companion ZIP is embedded in the relayed manifest with an exact size and SHA-256, so the dashboard does not need to be publicly reachable.
+Server Manager owns only `BepInEx/plugins/ValheimServerManagerManaged`; personal plugins are left alone. Manual ZIP uploads and protected infrastructure are server-only because the manager has no stable Thunderstore source for them. The client-targeted Server Manager runtime is embedded in the relayed manifest with an exact size and SHA-256, so the dashboard does not need to be publicly reachable.
 
 Server-owned characters are enabled by default. The player can separately opt into dashboard inspection and telemetry through:
 
@@ -79,7 +79,7 @@ Character snapshots are requested live and include current stats, biome, skills,
 
 ## Server-owned characters and migration
 
-VSM implements its own server-character protocol in the protected server agent and client companion; it does not depend on ServerCharacters or ServerSync. The server sends its authoritative native `.fch` before player spawn. The companion installs that profile into the active Valheim session and returns native checkpoints every 30 seconds, on Valheim profile saves, on server save requests, and during normal logout handling. Clients without companion 1.2.0 or newer are rejected when server characters are enabled.
+VSM implements its own server-character protocol in the protected server agent and client runtime; it does not depend on ServerCharacters or ServerSync. The server sends its authoritative native `.fch` before player spawn. The client runtime installs that profile into the active Valheim session and returns native checkpoints every 30 seconds, on Valheim profile saves, on server save requests, and during normal logout handling. Clients without a compatible Server Manager runtime are rejected when server characters are enabled.
 
 The Characters page migrates existing native `.fch` saves after Valheim is stopped. Upload each save with its owning Steam64 ID. The manager writes the profile atomically to `characters_local` as `Steam_<Steam64>_<character>.fch`; replacements create a copy under `characters_local/vsm-import-backups/` before activation. Runtime checkpoints also retain configurable rolling backups in `characters_local/vsm-character-backups/`.
 
@@ -105,7 +105,7 @@ mods list
 restart [seconds] [reason]
 ```
 
-Kick and online-ban actions in the Players page accept an optional reason. Compatible clients see the rendered notice before the delayed disconnect, and the reason is included in audit and event records. Welcome, kick, ban, restart, whitelist-rejection, and companion-required templates are editable under **Settings → Messages** with a fixed allowlist of placeholders.
+Kick and online-ban actions in the Players page accept an optional reason. Compatible clients see the rendered notice before the delayed disconnect, and the reason is included in audit and event records. Welcome, kick, ban, restart, whitelist-rejection, and client-runtime-required templates are editable under **Settings → Messages** with a fixed allowlist of placeholders.
 
 ## Mods
 

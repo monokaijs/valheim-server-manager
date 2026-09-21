@@ -16,6 +16,7 @@ public sealed record ServerMessageTemplates(
 public sealed partial class ServerMessageService(IServiceScopeFactory scopes, IConfiguration configuration)
 {
     private const string SettingKey = "server.message-templates";
+    private const string LegacyClientRequired = "{server} requires the VSM client companion. Restart Valheim after the bootstrap finishes installing it.";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private readonly string _serverName = configuration["SERVER_NAME"] ?? "Valheim Server";
@@ -26,7 +27,7 @@ public sealed partial class ServerMessageService(IServiceScopeFactory scopes, IC
         "You were banned from {server}. Reason: {reason}",
         "{server} restarts in {seconds} seconds. {reason}",
         "You are not on the {server} whitelist. A join request was sent to the administrators.",
-        "{server} requires the VSM client companion. Restart Valheim after the bootstrap finishes installing it.");
+        "{server} requires the Server Manager client runtime. Restart Valheim after Server Manager finishes installing it.");
 
     public async Task<ServerMessageTemplates> Get(CancellationToken cancellationToken = default)
     {
@@ -35,7 +36,13 @@ public sealed partial class ServerMessageService(IServiceScopeFactory scopes, IC
         var value = await db.ManagerSettings.AsNoTracking().Where(item => item.Key == SettingKey)
             .Select(item => item.Value).SingleOrDefaultAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(value)) return Defaults;
-        try { return Validate(JsonSerializer.Deserialize<ServerMessageTemplates>(value, JsonOptions) ?? Defaults); }
+        try
+        {
+            var templates = Validate(JsonSerializer.Deserialize<ServerMessageTemplates>(value, JsonOptions) ?? Defaults);
+            return templates.CompanionRequired == LegacyClientRequired
+                ? templates with { CompanionRequired = Defaults.CompanionRequired }
+                : templates;
+        }
         catch (JsonException) { return Defaults; }
     }
 

@@ -21,6 +21,8 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.version.outputs.release_version }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -34,6 +36,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Resolve release version
+        id: version
         env:
           VERSION_BUMP: ${{ inputs.bump }}
         run: |
@@ -45,11 +48,12 @@ jobs:
             minor) minor=$((minor + 1)); patch=0 ;;
             major) major=$((major + 1)); minor=0; patch=0 ;;
           esac
-          echo "RELEASE_VERSION=$major.$minor.$patch" >>"$GITHUB_ENV"
+          release_version="$major.$minor.$patch"
+          echo "RELEASE_VERSION=$release_version" >>"$GITHUB_ENV"
+          echo "release_version=$release_version" >>"$GITHUB_OUTPUT"
       - name: Record version in release source
         run: |
-          sed -i -E "s|<Version>[0-9]+\.[0-9]+\.[0-9]+</Version>|<Version>${RELEASE_VERSION}</Version>|" Directory.Build.props
-          sed -i -E "s|<InformationalVersion>[0-9]+\.[0-9]+\.[0-9]+</InformationalVersion>|<InformationalVersion>${RELEASE_VERSION}</InformationalVersion>|" Directory.Build.props
+          ./scripts/set-version.sh "$RELEASE_VERSION"
       - name: Verify control plane and dashboard
         run: |
           dotnet test ValheimServerManager.slnx
@@ -62,8 +66,28 @@ jobs:
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Directory.Build.props src/ValheimServerManager/wwwroot
+          git add Directory.Build.props README.md thunderstore.toml docker/entrypoint.sh \
+            plugins/ValheimServerManager.Bootstrap/ValheimServerManager.Bootstrap.csproj \
+            plugins/ValheimServerManager.Bootstrap/BootstrapSynchronizer.cs \
+            plugins/ValheimServerManager.RuntimeUpdater/ValheimServerManager.RuntimeUpdater.csproj \
+            plugins/ValheimServerManager.RuntimeUpdater/RuntimeUpdaterPlugin.cs \
+            plugins/ValheimServerManager.Server/ServerPlugin.cs \
+            plugins/ValheimServerManager.Client/ClientPlugin.cs \
+            src/ValheimServerManager/Program.cs \
+            src/ValheimServerManager/Services/ClientModManifestService.cs \
+            tests/ValheimServerManager.Tests/CoreTests.cs \
+            web/src/main.tsx src/ValheimServerManager/wwwroot
           git commit -m "Release manager ${RELEASE_VERSION}"
           git tag --annotate "v${RELEASE_VERSION}" --message "Valheim Server Manager ${RELEASE_VERSION}"
           git push origin HEAD:${GITHUB_REF_NAME} "v${RELEASE_VERSION}"
           gh release create "v${RELEASE_VERSION}" --title "Valheim Server Manager ${RELEASE_VERSION}" --generate-notes
+
+  publish-thunderstore:
+    name: Publish matching Thunderstore package
+    needs: release
+    uses: ./.github/workflows/publish-thunderstore.yml
+    with:
+      version: ${{ needs.release.outputs.release_version }}
+      ref: v${{ needs.release.outputs.release_version }}
+      create_tag: false
+    secrets: inherit

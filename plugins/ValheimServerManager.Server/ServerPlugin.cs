@@ -25,9 +25,10 @@ public sealed class ServerPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager";
     public const string PluginName = "Server Manager";
-    public const string PluginVersion = "1.6.5";
+    public const string PluginVersion = "1.6.6";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.server";
-    private const string ClientManifestRpc = "ServerModBootstrap_Manifest_v1";
+    private const string ClientManifestRpc = "ValheimServerManager_Manifest_v1";
+    private const string LegacyClientManifestRpc = "ServerModBootstrap_Manifest_v1";
     private readonly ConcurrentQueue<Action> _mainThread = new();
     private readonly ConcurrentQueue<string> _outgoing = new();
     private readonly Dictionary<long, DateTime> _joined = new();
@@ -50,7 +51,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private string _serverName = "Valheim Server";
     private string _welcomeMessage = "Welcome {player} to {server}.";
     private string _whitelistRejectedMessage = "You are not on the {server} whitelist. A join request was sent to the administrators.";
-    private string _companionRequiredMessage = "{server} requires the VSM client companion. Restart Valheim after the bootstrap finishes installing it.";
+    private string _companionRequiredMessage = "{server} requires the Server Manager client runtime. Restart Valheim after Server Manager finishes installing it.";
     private bool _pluginRegistryPublished;
     private ConfigEntry<string> _managerUrl;
     private ConfigEntry<string> _agentToken;
@@ -62,11 +63,17 @@ public sealed class ServerPlugin : BaseUnityPlugin
 
     private void Awake()
     {
+        if (!Application.isBatchMode)
+        {
+            Logger.LogInfo("Server agent disabled in the Valheim client process.");
+            enabled = false;
+            return;
+        }
         Instance = this;
         MigrateLegacyConfig();
         _managerUrl = Config.Bind("Connection", "ManagerUrl", Environment.GetEnvironmentVariable("VSM_AGENT_URL") ?? "ws://127.0.0.1:8080/internal/agent", "Loopback manager WebSocket URL.");
         _agentToken = Config.Bind("Connection", "AgentToken", "", "Shared manager token; the VSM_AGENT_TOKEN environment variable takes precedence and is not persisted.");
-        _serverCharactersEnabled = Config.Bind("ServerCharacters", "Enabled", true, "Make the server copy of each native Valheim character authoritative. Requires the VSM client companion.");
+        _serverCharactersEnabled = Config.Bind("ServerCharacters", "Enabled", true, "Make the server copy of each native Valheim character authoritative. Requires the Server Manager client runtime.");
         _acceptFirstJoinProfile = Config.Bind("ServerCharacters", "AcceptFirstJoinProfile", true, "Allow a character without a server save to seed its first server-owned profile. Disable after migration for a closed realm.");
         _rejectPreviouslyUsedCharacters = Config.Bind("ServerCharacters", "RejectPreviouslyUsedCharacters", false, "When accepting a first-join profile, require a character that has never entered another world or server.");
         _characterBackups = Config.Bind("ServerCharacters", "BackupsToKeep", 10, new ConfigDescription("Rolling native profile backups per character.", new AcceptableValueRange<int>(1, 50)));
@@ -226,7 +233,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
                 case "access.admin.remove": result = Access("m_adminList", data, false, "admin.removed"); break;
                 case "inventory.request":
                     var peerId = (long?)data["peerId"] ?? 0;
-                    if (!_companions.TryGetValue(peerId, out var inventoryAllowed)) throw new InvalidOperationException("The player companion is not connected.");
+                    if (!_companions.TryGetValue(peerId, out var inventoryAllowed)) throw new InvalidOperationException("The player's Server Manager runtime is not connected.");
                     if (!inventoryAllowed) throw new InvalidOperationException("The player has not enabled inventory inspection.");
                     _inventoryRequests[requestId] = Tuple.Create(peerId, DateTime.UtcNow);
                     InvokePeer(ZNet.instance.GetPeers().FirstOrDefault(item => item.m_uid == peerId), "VSM_InventoryRequest", requestId);
@@ -411,7 +418,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         foreach (var peer in ZNet.instance.GetPeers().Where(peer => peer != null && _joined.TryGetValue(peer.m_uid, out var joined) && DateTime.UtcNow - joined > TimeSpan.FromSeconds(15) && !_serverCharacterClients.Contains(peer.m_uid) && !_characterEnforcementHandled.Contains(peer.m_uid)).ToArray())
         {
             _characterEnforcementHandled.Add(peer.m_uid);
-            var reason = "VSM client companion 1.2.0 or newer is required for server-owned characters.";
+            var reason = "A compatible Server Manager client runtime is required for server-owned characters.";
             Logger.LogWarning($"Kicking {peer.m_playerName}: {reason}");
             var message = Render(_companionRequiredMessage, peer.m_playerName, reason);
             InvokePeer(peer, "VSM_AdminNotice", "Client update required", message);
@@ -513,7 +520,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         _companions[sender] = inventoryAllowed;
         var characterCapable = System.Version.TryParse(companionVersion, out var version) && version >= new System.Version(1, 2, 0);
         if (characterCapable) _serverCharacterClients.Add(sender);
-        Logger.LogInfo($"Companion handshake from peer {sender}: version={companionVersion}, inventory={inventoryAllowed}, serverCharacters={characterCapable}.");
+        Logger.LogInfo($"Client runtime handshake from peer {sender}: version={companionVersion}, inventory={inventoryAllowed}, serverCharacters={characterCapable}.");
         Event("companion.connected", new { peerId = sender, inventoryAllowed, companionVersion, serverCharacters = characterCapable }, "companion", "reported");
         if (_serverCharactersEnabled.Value && characterCapable && !_characterProfileSent.Contains(sender)) _pendingCharacterProfiles.Add(sender);
     }
@@ -639,6 +646,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
                 });
             if (invoke == null) throw new MissingMethodException(peer.m_rpc.GetType().FullName, "Invoke(string, object[])");
             invoke.Invoke(peer.m_rpc, new object[] { ClientManifestRpc, new object[] { manifest } });
+            invoke.Invoke(peer.m_rpc, new object[] { LegacyClientManifestRpc, new object[] { manifest } });
             Logger.LogInfo($"Relayed the client mod manifest to peer {peer.m_uid}.");
         }
         catch (Exception exception) { Logger.LogWarning($"Could not relay the client mod manifest: {exception.GetBaseException().Message}"); }

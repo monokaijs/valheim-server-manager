@@ -9,7 +9,7 @@ namespace ValheimServerManager.Services;
 public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfiguration configuration)
 {
     private const string SettingPrefix = "client-mod-sync:";
-    private const string CompanionCoordinate = "ValheimServerManager-ValheimServerManagerClient-1.4.9";
+    private const string RuntimeCoordinate = "Creaton-Server_Manager-1.6.6";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _dataPath = configuration["VSM_DATA_PATH"] ?? "/data/manager";
 
@@ -25,7 +25,7 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
             .Where(setting => setting.Key.StartsWith(SettingPrefix))
             .ToDictionaryAsync(setting => setting.Key, setting => setting.Value, cancellationToken);
 
-        var packages = new List<ClientManifestPackage> { await Companion(cancellationToken) };
+        var packages = new List<ClientManifestPackage> { await Runtime(cancellationToken) };
         foreach (var mod in mods)
         {
             if (IsBootstrapInfrastructure(mod) || !IsClientRequired(mod, settings)) continue;
@@ -72,17 +72,17 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private async Task<ClientManifestPackage> Companion(CancellationToken cancellationToken)
+    private async Task<ClientManifestPackage> Runtime(CancellationToken cancellationToken)
     {
-        var path = Path.Combine(_dataPath, "downloads", "ValheimServerManagerClient-1.4.9.zip");
-        if (!File.Exists(path)) throw new FileNotFoundException("The VSM client companion artifact is missing.", path);
+        var path = Path.Combine(_dataPath, "runtime", "ValheimServerManager-1.6.6-client.zip");
+        if (!File.Exists(path)) throw new FileNotFoundException("The VSM client runtime artifact is missing.", path);
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
-        if (bytes.Length > 4 * 1024 * 1024) throw new InvalidDataException("The VSM client companion exceeds the inline package limit.");
+        if (bytes.Length > 4 * 1024 * 1024) throw new InvalidDataException("The VSM client runtime exceeds the inline package limit.");
         return new ClientManifestPackage(
-            CompanionCoordinate,
-            "ValheimServerManager",
-            "ValheimServerManagerClient",
-            "1.4.9",
+            RuntimeCoordinate,
+            "Creaton",
+            "Server_Manager",
+            "1.6.6",
             "",
             bytes.LongLength,
             [],
@@ -101,7 +101,8 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
         mod.Name.Contains("BepInExPack", StringComparison.OrdinalIgnoreCase)
         || mod.Name.Equals("ServerModBootstrap", StringComparison.OrdinalIgnoreCase)
         || mod.Name.Equals("ValheimServerManagerClient", StringComparison.OrdinalIgnoreCase)
-        || mod.Name.Equals("ValheimServerManagerServer", StringComparison.OrdinalIgnoreCase);
+        || mod.Name.Equals("ValheimServerManagerServer", StringComparison.OrdinalIgnoreCase)
+        || mod.Name.Equals("Server_Manager", StringComparison.OrdinalIgnoreCase);
 
     private sealed record ClientModManifest(
         int SchemaVersion,
