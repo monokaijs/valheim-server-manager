@@ -60,7 +60,7 @@ After the first successful container start, authenticated owners give players th
 /api/v1/downloads/client-bootstrap
 ```
 
-Install its ZIP through r2modman/Thunderstore Mod Manager or copy its `BepInEx` directory into the player's Valheim directory. On the first connection, server agent 1.5 relays a deterministic manifest containing VSM companion 1.3 and every enabled Thunderstore mod marked **Required** in the Mods page. The bootstrap validates package identity, exact size, and SHA-256 where supplied, stages the packages, disconnects safely, and asks for one Valheim restart. The next connection runs the server's exact client mod set.
+Install bootstrap 2.2's ZIP through r2modman/Thunderstore Mod Manager or copy its `BepInEx` directory into the player's Valheim directory. On the first connection, server agent 1.6.5 relays a deterministic manifest containing the size- and SHA-256-verified embedded VSM client component 1.4.9 and every enabled Thunderstore mod marked **Required** in the Mods page. The bootstrap stages the packages, disconnects safely, and asks for one Valheim restart. The next connection runs the server's exact client mod set; there is no second mod for players to manage manually.
 
 The bootstrap owns only `BepInEx/plugins/XomNghienManaged`; personal plugins are left alone. Manual ZIP uploads and protected infrastructure are server-only because the manager has no stable Thunderstore source for them. The companion ZIP is embedded in the relayed manifest with an exact size and SHA-256, so the dashboard does not need to be publicly reachable.
 
@@ -95,15 +95,17 @@ status
 players
 save
 broadcast "message"
-kick PLAYER_OR_PEER
+kick PLAYER_OR_PEER [reason]
 ban PLATFORM_ID
 unban PLATFORM_ID
 whitelist list
 whitelist add PLATFORM_ID
 whitelist remove PLATFORM_ID
 mods list
-restart [seconds]
+restart [seconds] [reason]
 ```
+
+Kick and online-ban actions in the Players page accept an optional reason. Compatible clients see the rendered notice before the delayed disconnect, and the reason is included in audit and event records. Welcome, kick, ban, restart, whitelist-rejection, and companion-required templates are editable under **Settings → Messages** with a fixed allowlist of placeholders.
 
 ## Mods
 
@@ -114,6 +116,20 @@ Each managed package has a structured **Configure** editor after it has loaded o
 Enabled Thunderstore packages are client-required by default. Use the **Clients** switch to mark genuinely server-only packages. The active client manifest is published only by the authenticated loopback control channel and is relayed over the joining peer's game RPC; clients do not need a dashboard URL, token, or per-server configuration.
 
 Changes are staged. **Apply & restart** requests a world save, snapshots BepInEx, restarts the server, waits up to 120 seconds for the agent, and restores the snapshot if the agent does not reconnect. Mod DLLs are arbitrary native-equivalent server code; install only packages you trust.
+
+The Mods page checks Thunderstore daily and supports reviewing updates individually or using **Stage all** before the same guarded apply/restart flow. Updates remain pinned to exact versions and are never applied merely because a newer package exists.
+
+## Manager and dashboard updates
+
+Settings → Updates checks stable `vX.Y.Z` releases of this repository. Manual **Save & update** and optional daily automatic updates cover the ASP.NET control plane, React dashboard, server agent, and generated client artifact as one compatible release. Automatic application waits until no players are connected. The browser polls the running manager version and reloads its hashed UI assets after a successful container replacement.
+
+The application container intentionally has no Docker socket. Install the narrowly scoped root host updater once from the deployment checkout:
+
+```bash
+sudo ./scripts/install-host-updater.sh /absolute/path/to/valheim-server-manager
+```
+
+The updater timer reads only versioned requests from the persistent manager volume, accepts strict semantic release versions, builds the tagged GitHub source as a candidate image, and waits for Docker health validation. A failed build leaves the current deployment untouched; a failed startup restores the previous image. Update state and results remain visible in Settings → Updates and the audit log.
 
 ## Webhooks
 

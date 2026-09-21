@@ -13,6 +13,16 @@ namespace ValheimServerManager.Tests;
 
 public sealed class CoreTests
 {
+    [Theory]
+    [InlineData("1.6.1", "1.6.0", true)]
+    [InlineData("v2.0.0", "1.99.99", true)]
+    [InlineData("1.6.0", "1.6.0", false)]
+    [InlineData("1.5.9", "1.6.0", false)]
+    public void ManagerUpdates_CompareSemanticVersions(string candidate, string current, bool expected)
+    {
+        Assert.Equal(expected, ManagerUpdateService.IsNewer(candidate, current));
+    }
+
     [Fact]
     public void ConsoleTokenizer_PreservesQuotedArguments()
     {
@@ -24,6 +34,34 @@ public sealed class CoreTests
     public void ConsoleTokenizer_RejectsUnterminatedQuote()
     {
         Assert.Throws<ArgumentException>(() => SafeConsoleService.Tokenize("broadcast \"oops"));
+    }
+
+    [Fact]
+    public void ServerMessages_RenderOnlySupportedPlaceholders()
+    {
+        var templates = ServerMessageService.Validate(ServerMessageService.Defaults with
+        {
+            Kick = "Bye {player} from {server}: {reason}"
+        });
+        Assert.Equal("Bye Viking from The Hall: Griefing",
+            ServerMessageService.RenderTemplate(templates.Kick, "The Hall", "Viking", "Griefing", 0));
+        Assert.Throws<ArgumentException>(() => ServerMessageService.Validate(templates with { Kick = "{unknown}" }));
+    }
+
+    [Theory]
+    [InlineData(null, "No reason provided.")]
+    [InlineData("", "No reason provided.")]
+    [InlineData("  griefing  ", "griefing")]
+    public void ModerationReasons_AreNormalized(string? input, string expected)
+    {
+        Assert.Equal(expected, ServerMessageService.NormalizeReason(input));
+    }
+
+    [Fact]
+    public void ModerationReasons_RejectControlCharactersAndOversizeText()
+    {
+        Assert.Throws<ArgumentException>(() => ServerMessageService.NormalizeReason("line one\nline two"));
+        Assert.Throws<ArgumentException>(() => ServerMessageService.NormalizeReason(new string('x', 301)));
     }
 
     [Fact]
@@ -308,12 +346,12 @@ public sealed class CoreTests
         var root = Path.Combine(Path.GetTempPath(), "vsm-client-manifest-" + Guid.NewGuid().ToString("N"));
         var downloads = Path.Combine(root, "downloads");
         Directory.CreateDirectory(downloads);
-        var companion = Path.Combine(downloads, "ValheimServerManagerClient-1.3.0.zip");
+        var companion = Path.Combine(downloads, "ValheimServerManagerClient-1.4.9.zip");
         using (var archive = ZipFile.Open(companion, ZipArchiveMode.Create))
         {
             var manifest = archive.CreateEntry("manifest.json");
             await using var output = manifest.Open();
-            await JsonSerializer.SerializeAsync(output, new { name = "ValheimServerManagerClient", version_number = "1.3.0" });
+            await JsonSerializer.SerializeAsync(output, new { name = "ValheimServerManagerClient", version_number = "1.4.9" });
         }
 
         var services = new ServiceCollection();
@@ -342,6 +380,9 @@ public sealed class CoreTests
         var packages = initial.RootElement.GetProperty("packages");
         Assert.Equal(2, packages.GetArrayLength());
         Assert.False(string.IsNullOrWhiteSpace(packages[0].GetProperty("contentBase64").GetString()));
+        Assert.Equal("", packages[0].GetProperty("downloadUrl").GetString());
+        Assert.Equal(new FileInfo(companion).Length, packages[0].GetProperty("fileSize").GetInt64());
+        Assert.Equal(64, packages[0].GetProperty("sha256").GetString()!.Length);
         Assert.Equal(64, initial.RootElement.GetProperty("revision").GetString()!.Length);
 
         Guid modId;
@@ -350,6 +391,24 @@ public sealed class CoreTests
         await service.SetRequired(modId, false);
         using var serverOnly = JsonDocument.Parse(await service.BuildJson());
         Assert.Single(serverOnly.RootElement.GetProperty("packages").EnumerateArray());
+        Directory.Delete(root, true);
+    }
+
+    [Fact]
+    public async Task ServerCharacterSettings_PersistStrictFirstJoinPolicy()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "vsm-character-settings-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var services = new ServiceCollection();
+        services.AddDbContext<ManagerDbContext>(options => options.UseSqlite($"Data Source={Path.Combine(root, "manager.db")}"));
+        services.AddSingleton<ServerCharacterSettingsService>();
+        await using var provider = services.BuildServiceProvider();
+        await using (var scope = provider.CreateAsyncScope()) await scope.ServiceProvider.GetRequiredService<ManagerDbContext>().Database.EnsureCreatedAsync();
+        var settings = provider.GetRequiredService<ServerCharacterSettingsService>();
+
+        Assert.Equal(new ServerCharacterSettings(true, false), await settings.Get());
+        await settings.Set(new ServerCharacterSettings(true, true));
+        Assert.Equal(new ServerCharacterSettings(true, true), await settings.Get());
         Directory.Delete(root, true);
     }
 

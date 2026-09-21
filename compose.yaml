@@ -1,5 +1,6 @@
 services:
   valheim-manager:
+    image: ${VSM_IMAGE:-valheim-server-manager:local}
     build: .
     container_name: valheim-server-manager
     restart: unless-stopped
@@ -12,6 +13,7 @@ services:
       SERVER_CROSSPLAY: ${SERVER_CROSSPLAY:-false}
       VSM_UPDATE_ON_START: ${VSM_UPDATE_ON_START:-true}
       VSM_PUBLIC_URL: ${VSM_PUBLIC_URL:-}
+      VSM_UPDATE_REPOSITORY: ${VSM_UPDATE_REPOSITORY:-monokaijs/valheim-server-manager}
     ports:
       - "${VSM_HTTP_PORT:-8080}:8080/tcp"
       - "${SERVER_PORT:-2456}:${SERVER_PORT:-2456}/udp"

@@ -1,0 +1,69 @@
+name: Publish Manager Release
+run-name: Publish Manager (${{ inputs.bump }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semantic version component to increment
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: manager-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Resolve release version
+        env:
+          VERSION_BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          current=$(sed -n 's/.*<Version>\([0-9][0-9.]*\)<\/Version>.*/\1/p' Directory.Build.props)
+          IFS=. read -r major minor patch <<<"$current"
+          case "$VERSION_BUMP" in
+            patch) patch=$((patch + 1)) ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+          esac
+          echo "RELEASE_VERSION=$major.$minor.$patch" >>"$GITHUB_ENV"
+      - name: Record version in release source
+        run: |
+          sed -i -E "s|<Version>[0-9]+\.[0-9]+\.[0-9]+</Version>|<Version>${RELEASE_VERSION}</Version>|" Directory.Build.props
+          sed -i -E "s|<InformationalVersion>[0-9]+\.[0-9]+\.[0-9]+</InformationalVersion>|<InformationalVersion>${RELEASE_VERSION}</InformationalVersion>|" Directory.Build.props
+      - name: Verify control plane and dashboard
+        run: |
+          dotnet test ValheimServerManager.slnx
+          npm ci --prefix web
+          npm run build --prefix web
+      - name: Commit, tag, and create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Directory.Build.props src/ValheimServerManager/wwwroot
+          git commit -m "Release manager ${RELEASE_VERSION}"
+          git tag --annotate "v${RELEASE_VERSION}" --message "Valheim Server Manager ${RELEASE_VERSION}"
+          git push origin HEAD:${GITHUB_REF_NAME} "v${RELEASE_VERSION}"
+          gh release create "v${RELEASE_VERSION}" --title "Valheim Server Manager ${RELEASE_VERSION}" --generate-notes

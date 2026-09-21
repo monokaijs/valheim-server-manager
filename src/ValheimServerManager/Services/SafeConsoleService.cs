@@ -3,7 +3,7 @@ using System.Text;
 
 namespace ValheimServerManager.Services;
 
-public sealed class SafeConsoleService(AgentGateway agent, ProcessSupervisor supervisor, ServerState state, AccessListService access, AuditService audit)
+public sealed class SafeConsoleService(AgentGateway agent, ProcessSupervisor supervisor, ServerState state, AccessListService access, AuditService audit, ServerMessageService messages)
 {
     private static readonly HashSet<string> AllowedCommands = new(StringComparer.OrdinalIgnoreCase) { "help", "status", "players", "save", "broadcast", "kick", "ban", "unban", "whitelist", "mods", "restart" };
 
@@ -16,12 +16,16 @@ public sealed class SafeConsoleService(AgentGateway agent, ProcessSupervisor sup
         object result;
         switch (command)
         {
-            case "help": result = new { message = "help, status, players, save, broadcast <text>, kick <peer>, ban <id>, unban <id>, whitelist list|add|remove <id>, mods list, restart [seconds]" }; break;
+            case "help": result = new { message = "help, status, players, save, broadcast <text>, kick <peer> [reason], ban <id>, unban <id>, whitelist list|add|remove <id>, mods list, restart [seconds] [reason]" }; break;
             case "status": result = state.Snapshot(); break;
             case "players": result = state.Players; break;
             case "save": result = await Agent("world.save", new { }); break;
             case "broadcast": Require(parts, 2); result = await Agent("broadcast", new { message = string.Join(' ', parts.Skip(1)) }); break;
-            case "kick": Require(parts, 2); result = await Agent("player.kick", new { target = parts[1] }); break;
+            case "kick":
+                Require(parts, 2);
+                var kickReason = ServerMessageService.NormalizeReason(string.Join(' ', parts.Skip(2)));
+                result = await Agent("player.kick", new { target = parts[1], reason = kickReason, message = await messages.Render("kick", parts[1], kickReason, cancellationToken: cancellationToken) });
+                break;
             case "ban": Require(parts, 2); await access.Add("banned", parts[1]); result = new { message = $"Banned {parts[1]}" }; break;
             case "unban": Require(parts, 2); await access.Remove("banned", parts[1]); result = new { message = $"Unbanned {parts[1]}" }; break;
             case "whitelist":
@@ -32,13 +36,17 @@ public sealed class SafeConsoleService(AgentGateway agent, ProcessSupervisor sup
             case "mods": result = new { message = "Use the Mods page for package operations." }; break;
             case "restart":
                 var seconds = parts.Count > 1 && int.TryParse(parts[1], out var value) ? Math.Clamp(value, 0, 3600) : 0;
+                var reasonIndex = parts.Count > 1 && int.TryParse(parts[1], out _) ? 2 : 1;
+                var restartReason = ServerMessageService.NormalizeReason(string.Join(' ', parts.Skip(reasonIndex)));
+                var restartMessage = await messages.Render("restart", reason: restartReason, seconds: seconds, cancellationToken: cancellationToken);
+                if (agent.IsConnected) await Agent("broadcast", new { message = restartMessage });
                 _ = Task.Run(async () =>
                 {
                     if (seconds > 0) await Task.Delay(TimeSpan.FromSeconds(seconds));
                     if (agent.IsConnected) await agent.Command("world.save", new { }, TimeSpan.FromSeconds(60));
                     await supervisor.Restart(TimeSpan.Zero);
                 });
-                result = new { message = $"Restart scheduled in {seconds} seconds." };
+                result = new { message = $"Restart scheduled in {seconds} seconds.", reason = restartReason };
                 break;
             default: throw new ArgumentException("Command is not in the safe-command allowlist.");
         }

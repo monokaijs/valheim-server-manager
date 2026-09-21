@@ -78,6 +78,27 @@ public sealed class ModService(
         finally { _gate.Release(); }
     }
 
+    public async Task<int> StageAllUpdates(CancellationToken cancellationToken)
+    {
+        var pending = _availableUpdates.ToArray();
+        if (pending.Length == 0) return 0;
+        await using var scope = scopes.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();
+        var installed = await db.InstalledMods.AsNoTracking()
+            .Where(item => pending.Select(update => update.Key).Contains(item.Id))
+            .ToDictionaryAsync(item => item.Id, cancellationToken);
+        var staged = 0;
+        foreach (var update in pending)
+        {
+            if (!installed.TryGetValue(update.Key, out var mod) || mod.Protected) continue;
+            await InstallThunderstore(mod.Namespace, mod.Name, update.Value, cancellationToken);
+            staged++;
+        }
+        await CheckForUpdates(cancellationToken);
+        await audit.Write("mod.update.stage-all", staged.ToString(), "success", $"packages:{staged}");
+        return staged;
+    }
+
     public async Task<InstalledMod> InstallUpload(Stream stream, string fallbackName, CancellationToken cancellationToken)
     {
         var temp = Path.Combine(Path.GetTempPath(), "vsm-upload-" + Guid.NewGuid().ToString("N") + ".zip");

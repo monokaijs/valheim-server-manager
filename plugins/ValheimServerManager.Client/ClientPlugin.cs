@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -14,8 +15,8 @@ namespace ValheimServerManager.Client;
 public sealed class ClientPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager.client";
-    public const string PluginName = "Valheim Server Manager Companion";
-    public const string PluginVersion = "1.3.0";
+    public const string PluginName = "Valheim Server Manager Client";
+    public const string PluginVersion = "1.4.9";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.client";
     internal static ClientPlugin Instance { get; private set; }
     private ConfigEntry<bool> _allowInventory;
@@ -28,12 +29,16 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private bool _characterReady;
     private bool _bootstrapPending;
     private float _characterHandshakeStarted;
+    private float _nextCharacterHello;
     private float _nextCharacterUpload;
     private byte[] _pendingCharacterProfile;
     private PlayerProfile _serverProfile;
     private string _temporaryProfileName;
     private bool _uploading;
     private Heightmap.Biome _biome;
+    private string _pendingAdminNotice;
+    private ZNetPeer _serverPeer;
+    private ZRpc _serverRpc;
 
     private void Awake()
     {
@@ -47,7 +52,8 @@ public sealed class ClientPlugin : BaseUnityPlugin
         Harmony.CreateAndPatchAll(typeof(CraftPatch), PluginGuid);
         Harmony.CreateAndPatchAll(typeof(FindSpawnPointPatch), PluginGuid);
         Harmony.CreateAndPatchAll(typeof(ProfileSavePatch), PluginGuid);
-        Logger.LogInfo("Client companion loaded. Inventory and detailed telemetry are disabled until opted in.");
+        Harmony.CreateAndPatchAll(typeof(ConnectionNoticePatch), PluginGuid);
+        Logger.LogInfo("VSM client component loaded. Inventory and detailed telemetry are disabled until opted in.");
     }
 
     private void MigrateLegacyConfig()
@@ -67,24 +73,35 @@ public sealed class ClientPlugin : BaseUnityPlugin
         if (!_registered && ZRoutedRpc.instance != null)
         {
             ZRoutedRpc.instance.Register<string>("VSM_InventoryRequest", OnInventoryRequest);
-            ZRoutedRpc.instance.Register<bool, string>("VSM_CharacterProfile", OnCharacterProfile);
+            ZRoutedRpc.instance.Register<bool, string, bool>("VSM_CharacterProfile", OnCharacterProfile);
             ZRoutedRpc.instance.Register("VSM_CharacterCheckpoint", OnCharacterCheckpoint);
+            ZRoutedRpc.instance.Register<string, string>("VSM_AdminNotice", OnAdminNotice);
             _registered = true;
         }
-        if (!_announced && _registered && ZNet.instance != null && !ZNet.instance.IsServer() && ZNet.instance.GetServerPeer() != null)
+        if (!_announced && _registered && ZNet.instance != null && !ZNet.instance.IsServer() && _serverRpc != null)
         {
             _awaitingCharacterProfile = _enableServerCharacters.Value;
             _characterReady = !_enableServerCharacters.Value;
             _characterHandshakeStarted = Time.unscaledTime;
-            ZRoutedRpc.instance.InvokeRoutedRPC(ServerPeerId(), "VSM_ClientHello", _allowInventory.Value, _enableServerCharacters.Value ? PluginVersion : "");
+            _nextCharacterHello = Time.unscaledTime + 1f;
             _announced = true;
+            ShowLoading("Preparing server character", "VSM is authenticating the connection and loading your server-owned character before world data starts.");
+            Logger.LogInfo("Server network peer detected; starting the VSM capability handshake.");
+        }
+        if (_announced && !_serverCharacterMode && Time.unscaledTime >= _nextCharacterHello && Time.unscaledTime - _characterHandshakeStarted < 20f)
+        {
+            _nextCharacterHello = Time.unscaledTime + 2f;
+            InvokeServer("VSM_ClientHello", _allowInventory.Value, _enableServerCharacters.Value ? PluginVersion : "");
+            Logger.LogInfo("Sent VSM capability handshake to the server.");
         }
         if (_pendingCharacterProfile != null && Game.instance != null) ApplyServerProfile();
+        ShowPendingAdminNotice();
         if (_bootstrapPending && Player.m_localPlayer != null && Game.instance != null) AdoptCurrentProfile();
-        if (_awaitingCharacterProfile && !_serverCharacterMode && Time.unscaledTime - _characterHandshakeStarted > 8f)
+        if (_awaitingCharacterProfile && !_serverCharacterMode && Time.unscaledTime - _characterHandshakeStarted > 20f)
         {
             _awaitingCharacterProfile = false;
             _characterReady = true;
+            ShowLoading("Continuing with local character", "This server did not enable VSM server-owned characters.", 2f);
             Logger.LogInfo("Connected server did not negotiate VSM server characters; continuing with the selected local profile.");
         }
         if (_serverCharacterMode && _characterReady && Player.m_localPlayer != null && Time.unscaledTime >= _nextCharacterUpload)
@@ -98,10 +115,10 @@ public sealed class ClientPlugin : BaseUnityPlugin
             if (_biome != Heightmap.Biome.None && biome != _biome) SendEvent("player.biome.changed", new { from = _biome.ToString(), to = biome.ToString(), player = Player.m_localPlayer.GetPlayerName() });
             _biome = biome;
         }
-        if (ZNet.instance == null || ZNet.instance.GetServerPeer() == null) ResetConnection();
+        if (ZNet.instance == null || ZNet.instance.IsServer()) ResetConnection();
     }
 
-    private void OnCharacterProfile(long sender, bool found, string encoded)
+    private void OnCharacterProfile(long sender, bool found, string encoded, bool rejectPreviouslyUsed)
     {
         if (sender != ServerPeerId() || !_enableServerCharacters.Value) return;
         _serverCharacterMode = true;
@@ -110,6 +127,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         {
             if (found)
             {
+                ShowLoading("Loading server character", "The authoritative character was received. VSM is applying it before your player enters the world.");
                 var bytes = Convert.FromBase64String(encoded ?? "");
                 if (bytes.Length < 32 || bytes.Length > 2 * 1024 * 1024) throw new InvalidDataException("Server character profile size is invalid.");
                 _pendingCharacterProfile = bytes;
@@ -117,9 +135,24 @@ public sealed class ClientPlugin : BaseUnityPlugin
             }
             else
             {
+                var selected = Game.instance?.GetPlayerProfile();
+                var worldData = selected == null ? null : Traverse.Create(selected).Field("m_worldData").GetValue();
+                if (rejectPreviouslyUsed && worldData is ICollection worlds && worlds.Count != 0)
+                {
+                    _awaitingCharacterProfile = false;
+                    _characterReady = false;
+                    _bootstrapPending = false;
+                    const string reason = "This server requires an unused character for first entry. Create a new character or ask an administrator to import your save.";
+                    Logger.LogWarning(reason);
+                    QueueAdminNotice("Character rejected", reason);
+                    Traverse.Create(typeof(ZNet)).Field("m_connectionStatus").SetValue(ZNet.ConnectionStatus.ErrorConnectFailed);
+                    Game.instance.Logout();
+                    return;
+                }
                 _awaitingCharacterProfile = false;
                 _characterReady = true;
                 _bootstrapPending = true;
+                ShowLoading("Creating server character", "No server character exists yet. VSM will import your selected character after the world finishes loading.");
                 Logger.LogInfo("No server character exists yet; the selected profile will seed the first server-owned save.");
             }
         }
@@ -127,7 +160,30 @@ public sealed class ClientPlugin : BaseUnityPlugin
         {
             Logger.LogError("Unable to receive server character: " + exception);
             _characterReady = false;
+            ShowLoading("Server character unavailable", "VSM could not validate the server character. The connection will not continue with an unsafe profile.", 6f);
         }
+    }
+
+    private void OnAdminNotice(long sender, string title, string message)
+    {
+        if (sender != ServerPeerId()) return;
+        QueueAdminNotice(title, message);
+    }
+
+    private void QueueAdminNotice(string title, string message)
+    {
+        title = (title ?? "Server notice").Trim();
+        message = (message ?? "").Trim();
+        _pendingAdminNotice = title + (message.Length > 0 ? "\n" + message : "");
+        Logger.LogWarning(_pendingAdminNotice.Replace('\n', ' '));
+        ShowPendingAdminNotice();
+    }
+
+    private void ShowPendingAdminNotice()
+    {
+        if (string.IsNullOrWhiteSpace(_pendingAdminNotice) || MessageHud.instance == null) return;
+        MessageHud.instance.ShowMessage(MessageHud.MessageType.Center, _pendingAdminNotice);
+        _pendingAdminNotice = null;
     }
 
     private void ApplyServerProfile()
@@ -147,12 +203,14 @@ public sealed class ClientPlugin : BaseUnityPlugin
             _awaitingCharacterProfile = false;
             _characterReady = true;
             _nextCharacterUpload = Time.unscaledTime + 30f;
+            ShowLoading("Character ready", "Your server-owned character is ready. Entering the world…", 1.5f);
             Logger.LogInfo("Server-owned character profile loaded for " + profile.GetName() + ".");
         }
         catch (Exception exception)
         {
             Logger.LogError("Unable to apply server-owned character: " + exception);
             _characterReady = false;
+            ShowLoading("Server character unavailable", "VSM could not apply the server character. Check the client log for details.", 6f);
         }
     }
 
@@ -172,12 +230,14 @@ public sealed class ClientPlugin : BaseUnityPlugin
             _bootstrapPending = false;
             _characterReady = true;
             UploadCharacter();
+            ShowLoading("Character imported", "Your selected character is now owned and synchronized by this server.", 1.5f);
             Logger.LogInfo("First server-owned character profile created for " + profile.GetName() + ".");
         }
         catch (Exception exception)
         {
             Logger.LogError("Unable to seed server-owned character: " + exception);
             _characterReady = false;
+            ShowLoading("Character import failed", "VSM could not create the first server-owned character. Check the client log for details.", 6f);
         }
     }
 
@@ -207,7 +267,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
             var path = _serverProfile.GetPath();
             var bytes = File.ReadAllBytes(path);
             if (bytes.Length > 2 * 1024 * 1024) throw new InvalidDataException("Server character profile exceeds 2 MiB.");
-            ZRoutedRpc.instance.InvokeRoutedRPC(ServerPeerId(), "VSM_CharacterUpload", Convert.ToBase64String(bytes));
+            InvokeServer("VSM_CharacterUpload", Convert.ToBase64String(bytes));
             try { File.Delete(path); } catch { }
         }
         catch (Exception exception) { Logger.LogError("Unable to upload server-owned character: " + exception); }
@@ -216,7 +276,6 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void ResetConnection()
     {
-        if (!_announced && !_serverCharacterMode && !_awaitingCharacterProfile) return;
         if (!string.IsNullOrEmpty(_temporaryProfileName))
         {
             try { File.Delete(SaveSystem.GetCharacterPath(FileHelpers.FileSource.Local, _temporaryProfileName)); } catch { }
@@ -229,9 +288,43 @@ public sealed class ClientPlugin : BaseUnityPlugin
         _pendingCharacterProfile = null;
         _serverProfile = null;
         _temporaryProfileName = null;
+        _serverPeer = null;
+        _serverRpc = null;
+        HideLoading();
     }
 
+    private void AttachServerPeer(ZNetPeer peer)
+    {
+        ResetConnection();
+        _serverPeer = peer;
+        _serverRpc = peer?.m_rpc;
+        if (_enableServerCharacters != null && _enableServerCharacters.Value)
+            ShowLoading("Connecting to server", "VSM is establishing the character-sync channel before Valheim starts loading the world.");
+    }
+
+    private void ShowLoading(string title, string detail, float hideAfterSeconds = 0f)
+    {
+        // Character synchronization is intentionally silent. The bootstrap owns the
+        // only full-screen update UI, and shows it only when files actually changed.
+    }
+
+    private void HideLoading() { }
+
     internal bool ShouldWaitForServerCharacter => _enableServerCharacters.Value && _awaitingCharacterProfile && !_characterReady;
+
+    [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
+    private static class ConnectionNoticePatch
+    {
+        private static void Postfix(ZNet __instance, ZNetPeer __0)
+        {
+            if (__instance.IsServer() || __0?.m_rpc == null) return;
+            Instance.AttachServerPeer(__0);
+            __0.m_rpc.Register<string>("VSM_InventoryRequest", (rpc, requestId) => Instance.OnInventoryRequest(__0.m_uid, requestId));
+            __0.m_rpc.Register<bool, string, bool>("VSM_CharacterProfile", (rpc, found, encoded, rejectPreviouslyUsed) => Instance.OnCharacterProfile(__0.m_uid, found, encoded, rejectPreviouslyUsed));
+            __0.m_rpc.Register("VSM_CharacterCheckpoint", rpc => Instance.OnCharacterCheckpoint(__0.m_uid));
+            __0.m_rpc.Register<string, string>("VSM_AdminNotice", (rpc, title, message) => Instance.QueueAdminNotice(title, message));
+        }
+    }
 
     private void OnInventoryRequest(long sender, string requestId)
     {
@@ -362,16 +455,21 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void Reply(string requestId, object payload)
     {
-        ZRoutedRpc.instance.InvokeRoutedRPC(ServerPeerId(), "VSM_InventoryResponse", requestId, JsonConvert.SerializeObject(payload));
+        InvokeServer("VSM_InventoryResponse", requestId, JsonConvert.SerializeObject(payload));
     }
 
     internal void SendEvent(string eventType, object data)
     {
         if (!_allowTelemetry.Value || ZRoutedRpc.instance == null) return;
-        ZRoutedRpc.instance.InvokeRoutedRPC(ServerPeerId(), "VSM_CompanionEvent", JsonConvert.SerializeObject(new { eventType, data }));
+        InvokeServer("VSM_CompanionEvent", JsonConvert.SerializeObject(new { eventType, data }));
     }
 
-    private static long ServerPeerId() => ZNet.instance?.GetServerPeer()?.m_uid ?? 0L;
+    private static void InvokeServer(string methodName, params object[] arguments)
+    {
+        Instance?._serverRpc?.Invoke(methodName, arguments);
+    }
+
+    private static long ServerPeerId() => Instance?._serverPeer?.m_uid ?? 0L;
 
     [HarmonyPatch(typeof(Game), "FindSpawnPoint")]
     private static class FindSpawnPointPatch

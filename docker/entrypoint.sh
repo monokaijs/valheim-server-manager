@@ -44,23 +44,23 @@ mkdir -p "$server_package/BepInEx/plugins/ValheimServerManager.Server"
 cp /data/server/BepInEx/plugins/ValheimServerManager/ValheimServerManager.Server.dll \
   /data/server/BepInEx/plugins/ValheimServerManager/Newtonsoft.Json.dll \
   "$server_package/BepInEx/plugins/ValheimServerManager.Server/"
-printf '%s\n' '{"name":"Server_Manager","version_number":"1.5.0","website_url":"https://github.com/monokaijs/valheim-server-manager","description":"Mandatory VSM administration, events, mod-config registry, admission requests, client-mod relay, and server-owned character agent.","dependencies":["denikson-BepInExPack_Valheim-5.4.2350"]}' >"$server_package/manifest.json"
+printf '%s\n' '{"name":"Server_Manager","version_number":"1.6.5","website_url":"https://github.com/monokaijs/valheim-server-manager","description":"Mandatory VSM administration, customizable moderation notices, admission requests, client-mod relay, and server-owned character agent.","dependencies":["denikson-BepInExPack_Valheim-5.4.2350"]}' >"$server_package/manifest.json"
 printf '%s\n' '# Server Manager' '' 'Mandatory server-side administration, event, and authoritative native character bridge. Configure its token through the manager container.' >"$server_package/README.md"
 python3 /app/plugins/make_icon.py "$server_package/icon.png"
-(cd "$server_package" && zip -qr /data/manager/downloads/ValheimServerManagerServer-1.5.0.zip .)
+(cd "$server_package" && zip -qr /data/manager/downloads/ValheimServerManagerServer-1.6.5.zip .)
 rm -rf "$server_package"
 
 package="$(mktemp -d)"
 mkdir -p "$package/BepInEx/plugins/ValheimServerManager.Client"
 cp /tmp/vsm-client/ValheimServerManager.Client.dll /tmp/vsm-client/Newtonsoft.Json.dll "$package/BepInEx/plugins/ValheimServerManager.Client/"
-printf '%s\n' '{"name":"ValheimServerManagerClient","version_number":"1.3.0","website_url":"","description":"Client half of VSM server-owned characters plus consent-based inventory and telemetry.","dependencies":["denikson-BepInExPack_Valheim-5.4.2350"]}' >"$package/manifest.json"
+printf '%s\n' '{"name":"ValheimServerManagerClient","version_number":"1.4.9","website_url":"","description":"Automatically managed client half of VSM server-owned characters, customizable server notices, consent-based inventory, and telemetry.","dependencies":["denikson-BepInExPack_Valheim-5.4.2350"]}' >"$package/manifest.json"
 printf '%s\n' '# Valheim Server Manager Client' '' 'Required for VSM server-owned characters. Live dashboard inspection and detailed telemetry retain their separate opt-in privacy settings.' >"$package/README.md"
 python3 /app/plugins/make_icon.py "$package/icon.png"
-(cd "$package" && zip -qr /data/manager/downloads/ValheimServerManagerClient-1.3.0.zip .)
+(cd "$package" && zip -qr /data/manager/downloads/ValheimServerManagerClient-1.4.9.zip .)
 rm -rf "$package" /tmp/vsm-client
 
-if [[ -f /app/plugins/artifacts/XomNghien-ServerModBootstrap-2.1.0.zip ]]; then
-  cp /app/plugins/artifacts/XomNghien-ServerModBootstrap-2.1.0.zip /data/manager/downloads/
+if [[ -f /app/plugins/artifacts/XomNghien-ServerModBootstrap-2.2.0.zip ]]; then
+  cp /app/plugins/artifacts/XomNghien-ServerModBootstrap-2.2.0.zip /data/manager/downloads/
 fi
 
 chmod +x /data/server/valheim_server.x86_64 /data/server/start_server_bepinex.sh 2>/dev/null || true

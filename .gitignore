@@ -10,6 +10,10 @@ web/vite.config.d.ts
 .env
 data/
 artifacts/
+!plugins/artifacts/
+plugins/artifacts/*
+!plugins/artifacts/README.md
+!plugins/artifacts/XomNghien-ServerModBootstrap-2.2.0.zip
 .bepinex/
 .bepinex.zip
 .release/

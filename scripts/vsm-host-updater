@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+container_name="${VSM_CONTAINER_NAME:-valheim-server-manager}"
+deployment_root="${VSM_DEPLOYMENT_ROOT:-/opt/valheim-server-manager}"
+repository="${VSM_UPDATE_REPOSITORY:-monokaijs/valheim-server-manager}"
+lock_file="/run/vsm-host-updater.lock"
+
+exec 9>"$lock_file"
+flock -n 9 || exit 0
+
+manager_volume=$(docker inspect "$container_name" --format '{{range .Mounts}}{{if eq .Destination "/data/manager"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)
+if [[ -z "$manager_volume" || ! -d "$manager_volume" ]]; then
+  exit 0
+fi
+
+update_root="$manager_volume/updates"
+request_file="$update_root/manager-request.json"
+status_file="$update_root/manager-status.json"
+mkdir -p "$update_root"
+touch "$update_root/host-heartbeat"
+
+if [[ ! -f "$request_file" ]]; then
+  exit 0
+fi
+
+write_status() {
+  local state="$1"
+  local target="$2"
+  local detail="$3"
+  local temporary="$status_file.tmp"
+  python3 - "$temporary" "$state" "$target" "$detail" <<'PY'
+import datetime
+import json
+import sys
+
+path, state, target, detail = sys.argv[1:]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "state": state,
+        "targetVersion": target or None,
+        "detail": detail,
+        "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()
+    }, handle)
+PY
+  mv -f "$temporary" "$status_file"
+}
+
+target_version=$(python3 - "$request_file" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle).get("version", ""))
+PY
+)
+
+if [[ ! "$target_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  write_status "failed" "$target_version" "Rejected an invalid release version."
+  mv -f "$request_file" "$request_file.rejected"
+  exit 1
+fi
+
+mv -f "$request_file" "$request_file.processing"
+work_root=$(mktemp -d)
+cleanup() { rm -rf "$work_root"; }
+trap cleanup EXIT
+
+previous_image=$(docker inspect "$container_name" --format '{{.Config.Image}}')
+candidate_image="valheim-server-manager:v${target_version}"
+archive_url="https://github.com/${repository}/archive/refs/tags/v${target_version}.tar.gz"
+
+write_status "downloading" "$target_version" "Downloading versioned release source from GitHub."
+if ! curl --fail --location --silent --show-error "$archive_url" --output "$work_root/release.tar.gz"; then
+  write_status "failed" "$target_version" "Release download failed; the existing deployment was not changed."
+  exit 1
+fi
+mkdir -p "$work_root/source"
+tar -xzf "$work_root/release.tar.gz" --strip-components=1 -C "$work_root/source"
+test -f "$work_root/source/Dockerfile"
+test -f "$work_root/source/compose.yaml"
+
+write_status "building" "$target_version" "Building the candidate image. The current manager remains available."
+if ! docker build --pull --tag "$candidate_image" "$work_root/source"; then
+  write_status "failed" "$target_version" "Candidate build failed; the existing deployment was not changed."
+  exit 1
+fi
+
+write_status "restarting" "$target_version" "Starting the candidate and waiting for its health check."
+if ! (cd "$deployment_root" && VSM_IMAGE="$candidate_image" docker compose up --detach --no-build valheim-manager); then
+  write_status "rolling-back" "$target_version" "Candidate start failed; restoring the previous image."
+  (cd "$deployment_root" && VSM_IMAGE="$previous_image" docker compose up --detach --no-build valheim-manager) || true
+  write_status "failed" "$target_version" "Candidate start failed and the previous image was restored."
+  exit 1
+fi
+
+healthy=false
+for _ in $(seq 1 120); do
+  health=$(docker inspect "$container_name" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' 2>/dev/null || true)
+  if [[ "$health" == "healthy" ]]; then
+    healthy=true
+    break
+  fi
+  if [[ "$health" == "unhealthy" || "$health" == "exited" || "$health" == "dead" ]]; then
+    break
+  fi
+  sleep 5
+done
+
+if [[ "$healthy" != "true" ]]; then
+  write_status "rolling-back" "$target_version" "Health validation failed; restoring the previous image."
+  (cd "$deployment_root" && VSM_IMAGE="$previous_image" docker compose up --detach --no-build valheim-manager) || true
+  write_status "failed" "$target_version" "Health validation failed and the previous image was restored."
+  exit 1
+fi
+
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a --delete --exclude .env --exclude .git "$work_root/source/" "$deployment_root/"
+fi
+if [[ -f "$deployment_root/scripts/vsm-host-updater" ]]; then
+  install -m 0755 "$deployment_root/scripts/vsm-host-updater" /usr/local/sbin/vsm-host-updater
+fi
+if [[ -f "$deployment_root/.env" ]]; then
+  if grep -q '^VSM_IMAGE=' "$deployment_root/.env"; then
+    sed -i "s|^VSM_IMAGE=.*|VSM_IMAGE=$candidate_image|" "$deployment_root/.env"
+  else
+    printf '\nVSM_IMAGE=%s\n' "$candidate_image" >>"$deployment_root/.env"
+  fi
+fi
+rm -f "$request_file.processing"
+touch "$update_root/host-heartbeat"
+write_status "succeeded" "$target_version" "Updated successfully. The dashboard will reload automatically."

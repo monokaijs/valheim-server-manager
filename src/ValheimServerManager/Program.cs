@@ -46,6 +46,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient("webhooks", client => client.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddHttpClient("thunderstore", client => { client.Timeout = TimeSpan.FromMinutes(5); client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/1.0"); });
 builder.Services.AddHttpClient("steam", client => { client.Timeout = TimeSpan.FromSeconds(15); client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/1.0"); });
+builder.Services.AddHttpClient("manager-updates", client => { client.Timeout = TimeSpan.FromSeconds(20); client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/1.6"); });
 builder.Services.AddSingleton<ServerState>();
 builder.Services.AddSingleton<EventBus>();
 builder.Services.AddSingleton<AgentGateway>();
@@ -55,17 +56,21 @@ builder.Services.AddSingleton<SafeConsoleService>();
 builder.Services.AddSingleton<ModService>();
 builder.Services.AddSingleton<ClientModManifestService>();
 builder.Services.AddSingleton<ServerCharacterService>();
+builder.Services.AddSingleton<ServerCharacterSettingsService>();
 builder.Services.AddSingleton<ServerSettingsService>();
+builder.Services.AddSingleton<ServerMessageService>();
 builder.Services.AddSingleton<ApiTokenService>();
 builder.Services.AddSingleton<JoinRequestService>();
 builder.Services.AddSingleton<PluginRegistryService>();
 builder.Services.AddSingleton<ModConfigService>();
+builder.Services.AddSingleton<ManagerUpdateService>();
 builder.Services.AddSingleton<ProcessSupervisor>();
 builder.Services.AddSingleton<SteamAuthService>();
 builder.Services.AddScoped<SteamAdminCookieEvents>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProcessSupervisor>());
 builder.Services.AddHostedService<WebhookDispatcher>();
 builder.Services.AddHostedService<ModUpdateChecker>();
+builder.Services.AddHostedService<ManagerUpdateChecker>();
 
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 512L * 1024 * 1024);
 var app = builder.Build();
@@ -111,7 +116,26 @@ app.Use(async (context, next) =>
 });
 app.UseExceptionHandler();
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
-app.UseStaticFiles();
+app.Use(async (context, next) =>
+{
+    context.Response.OnStarting(() =>
+    {
+        if (context.Response.ContentType?.StartsWith("text/html", StringComparison.OrdinalIgnoreCase) == true)
+            context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+        return Task.CompletedTask;
+    });
+    await next();
+});
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = context =>
+    {
+        if (context.File.Name.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+            context.Context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+        else if (context.Context.Request.Path.StartsWithSegments("/assets"))
+            context.Context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
+    }
+});
 app.UseRouting();
 app.UseAuthentication();
 app.UseAuthorization();
@@ -159,18 +183,24 @@ auth.MapPost("/logout", async (HttpContext context) => { await context.SignOutAs
 var api = app.MapGroup("/api/v1").RequireAuthorization();
 api.MapGet("/status", (ServerState state) => Results.Ok(state.Snapshot()));
 api.MapGet("/players", (ServerState state) => Results.Ok(state.Players));
-api.MapPost("/players/{peerId:long}/kick", async (long peerId, AgentGateway agent, AuditService audit) =>
+api.MapPost("/players/{peerId:long}/kick", async (long peerId, ModerationRequest request, AgentGateway agent, ServerMessageService messages, ServerState state, AuditService audit, CancellationToken ct) =>
 {
-    var result = await agent.Command("player.kick", new { peerId }, TimeSpan.FromSeconds(10));
+    var reason = ServerMessageService.NormalizeReason(request.Reason);
+    var player = state.Players.FirstOrDefault(item => item.PeerId == peerId)?.Name ?? peerId.ToString();
+    var message = await messages.Render("kick", player, reason, cancellationToken: ct);
+    var result = await agent.Command("player.kick", new { peerId, reason, message }, TimeSpan.FromSeconds(10));
     var ok = !result.TryGetProperty("ok", out var succeeded) || succeeded.GetBoolean();
-    await audit.Write("player.kick", peerId.ToString(), ok ? "success" : "failure", ok ? "" : result.ToString());
+    await audit.Write("player.kick", peerId.ToString(), ok ? "success" : "failure", ok ? $"reason:{reason}" : result.ToString());
     return Results.Json(result);
 }).RequireAntiforgery();
-api.MapPost("/players/{peerId:long}/ban", async (long peerId, AgentGateway agent, AuditService audit) =>
+api.MapPost("/players/{peerId:long}/ban", async (long peerId, ModerationRequest request, AgentGateway agent, ServerMessageService messages, ServerState state, AuditService audit, CancellationToken ct) =>
 {
-    var result = await agent.Command("player.ban", new { peerId }, TimeSpan.FromSeconds(10));
+    var reason = ServerMessageService.NormalizeReason(request.Reason);
+    var player = state.Players.FirstOrDefault(item => item.PeerId == peerId)?.Name ?? peerId.ToString();
+    var message = await messages.Render("ban", player, reason, cancellationToken: ct);
+    var result = await agent.Command("player.ban", new { peerId, reason, message }, TimeSpan.FromSeconds(10));
     var ok = !result.TryGetProperty("ok", out var succeeded) || succeeded.GetBoolean();
-    await audit.Write("player.ban", peerId.ToString(), ok ? "success" : "failure", ok ? "" : result.ToString());
+    await audit.Write("player.ban", peerId.ToString(), ok ? "success" : "failure", ok ? $"reason:{reason}" : result.ToString());
     return Results.Json(result);
 }).RequireAntiforgery();
 api.MapPost("/players/{peerId:long}/inventory", async (long peerId, AgentGateway agent, AuditService audit) =>
@@ -208,7 +238,11 @@ api.MapPost("/characters/import", async (HttpRequest request, ServerCharacterSer
     return Results.Created($"/api/v1/characters/{Uri.EscapeDataString(imported.FileName)}", imported);
 }).RequireAntiforgery();
 
-api.MapGet("/access", async (AccessListService access) => Results.Ok(new { permitted = await access.Read("permitted"), banned = await access.Read("banned"), admins = await access.Read("admin") }));
+api.MapGet("/access", async (AccessListService access) =>
+{
+    var permitted = await access.Read("permitted");
+    return Results.Ok(new { whitelistEnabled = permitted.Count > 0, permitted, banned = await access.Read("banned"), admins = await access.Read("admin") });
+});
 api.MapGet("/join-requests", async (string? status, JoinRequestService requests, CancellationToken ct) => Results.Ok(await requests.List(status, ct)));
 api.MapPost("/join-requests/{id:guid}/approve", async (Guid id, JoinRequestService requests, AccessListService access, AuditService audit, CancellationToken ct) =>
     Results.Ok(await requests.Resolve(id, "approved", access, audit, ct))).RequireAntiforgery();
@@ -248,6 +282,7 @@ api.MapPost("/mods/{id:guid}/client-sync", async (Guid id, ClientSyncMutation re
     return Results.NoContent();
 }).RequireAntiforgery();
 api.MapPost("/mods/updates/check", async (ModService mods, CancellationToken ct) => { await mods.CheckForUpdates(ct); return Results.Ok(mods.AvailableUpdates); }).RequireAntiforgery();
+api.MapPost("/mods/updates/stage-all", async (ModService mods, CancellationToken ct) => Results.Ok(new { staged = await mods.StageAllUpdates(ct) })).RequireAntiforgery();
 api.MapPost("/mods/thunderstore", async ([FromBody] ThunderstoreInstall request, ModService mods, CancellationToken ct) => { await mods.InstallThunderstore(request.Namespace, request.Name, request.Version, ct); return Results.Accepted(); }).RequireAntiforgery();
 api.MapPost("/mods/upload", async (HttpRequest request, ModService mods, CancellationToken ct) =>
 {
@@ -260,17 +295,17 @@ api.MapPost("/mods/upload", async (HttpRequest request, ModService mods, Cancell
 }).RequireAntiforgery();
 api.MapGet("/downloads/client-companion", (IConfiguration configuration) =>
 {
-    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManagerClient-1.3.0.zip");
+    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManagerClient-1.4.9.zip");
     return File.Exists(path) ? Results.File(path, "application/zip", Path.GetFileName(path)) : Results.NotFound();
 });
 api.MapGet("/downloads/server-agent", (IConfiguration configuration) =>
 {
-    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManagerServer-1.5.0.zip");
+    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManagerServer-1.6.5.zip");
     return File.Exists(path) ? Results.File(path, "application/zip", Path.GetFileName(path)) : Results.NotFound();
 });
 api.MapGet("/downloads/client-bootstrap", (IConfiguration configuration) =>
 {
-    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "XomNghien-ServerModBootstrap-2.1.0.zip");
+    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "XomNghien-ServerModBootstrap-2.2.0.zip");
     return File.Exists(path) ? Results.File(path, "application/zip", Path.GetFileName(path)) : Results.NotFound();
 });
 api.MapPost("/mods/{id:guid}/enable", async (Guid id, ModService mods, CancellationToken ct) => { await mods.SetEnabled(id, true, ct); return Results.NoContent(); }).RequireAntiforgery();
@@ -287,6 +322,30 @@ api.MapPost("/settings/server-access", async (ServerAccessMutation request, Serv
     await audit.Write("server.access.update", "valheim", "success", request.PasswordEnabled ? "password-enabled" : "passwordless-private");
     return Results.Ok(await settings.Get(ct));
 }).RequireAntiforgery();
+
+api.MapGet("/settings/server-characters", async (ServerCharacterSettingsService settings, CancellationToken ct) => Results.Ok(await settings.Get(ct)));
+api.MapPut("/settings/server-characters", async (ServerCharacterSettings request, ServerCharacterSettingsService settings, AgentGateway agent, AuditService audit, CancellationToken ct) =>
+{
+    var saved = await settings.Set(request, ct);
+    await agent.PublishServerCharacterSettings(ct);
+    await audit.Write("server-characters.settings.update", "valheim", "success",
+        $"acceptFirstJoin={saved.AcceptFirstJoinProfile};rejectPreviouslyUsed={saved.RejectPreviouslyUsedCharacters}");
+    return Results.Ok(saved);
+}).RequireAntiforgery();
+
+api.MapGet("/settings/messages", async (ServerMessageService messages, CancellationToken ct) => Results.Ok(await messages.Get(ct)));
+api.MapPut("/settings/messages", async (ServerMessageTemplates request, ServerMessageService messages, AgentGateway agent, AuditService audit, CancellationToken ct) =>
+{
+    var saved = await messages.Set(request, ct);
+    await agent.PublishServerMessages(ct);
+    await audit.Write("server.messages.update", "valheim");
+    return Results.Ok(saved);
+}).RequireAntiforgery();
+
+api.MapGet("/manager-update", async (ManagerUpdateService updates, CancellationToken ct) => Results.Ok(await updates.Get(ct)));
+api.MapPost("/manager-update/check", async (ManagerUpdateService updates, CancellationToken ct) => Results.Ok(await updates.Check(ct))).RequireAntiforgery();
+api.MapPut("/manager-update/settings", async (ManagerUpdateSettings request, ManagerUpdateService updates, CancellationToken ct) => Results.Ok(await updates.SetAutomatic(request.Automatic, ct))).RequireAntiforgery();
+api.MapPost("/manager-update/apply", async (ManagerUpdateService updates, CancellationToken ct) => Results.Accepted(value: await updates.RequestApply(false, ct))).RequireAntiforgery();
 
 api.MapGet("/api-tokens", async (ApiTokenService tokens, CancellationToken ct) => Results.Ok(await tokens.List(ct)));
 api.MapPost("/api-tokens", async (ApiTokenCreate request, ApiTokenService tokens, AuditService audit, CancellationToken ct) =>
@@ -413,6 +472,8 @@ static string NormalizeRegistrationId(string value)
 public sealed record ThunderstoreInstall(string Namespace, string Name, string Version);
 public sealed record ClientSyncMutation(bool Required);
 public sealed record ServerAccessMutation(bool PasswordEnabled, string? Password);
+public sealed record ModerationRequest(string? Reason);
 public sealed record ApiTokenCreate(string Name, string[] Scopes);
 public sealed record ModConfigUpdate(string File, string Revision, ModConfigValueMutation[] Values);
+public sealed record ManagerUpdateSettings(bool Automatic);
 public partial class Program { }

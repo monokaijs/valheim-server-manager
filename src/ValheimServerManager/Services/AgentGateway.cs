@@ -9,7 +9,8 @@ using ValheimServerManager.Models;
 namespace ValheimServerManager.Services;
 
 public sealed class AgentGateway(ServerState state, EventBus events, ClientModManifestService clientMods, JoinRequestService joinRequests,
-    PluginRegistryService pluginRegistry, IConfiguration config, ILogger<AgentGateway> logger)
+    PluginRegistryService pluginRegistry, ServerMessageService serverMessages, ServerCharacterSettingsService characterSettings,
+    IConfiguration config, ILogger<AgentGateway> logger)
 {
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
@@ -74,6 +75,20 @@ public sealed class AgentGateway(ServerState state, EventBus events, ClientModMa
         await Send(socket, new { type = "clientModManifest", payload = new { json } }, cancellationToken);
     }
 
+    public async Task PublishServerMessages(CancellationToken cancellationToken = default)
+    {
+        var socket = _socket;
+        if (socket?.State != WebSocketState.Open) return;
+        await Send(socket, new { type = "serverMessages", payload = await serverMessages.Payload(cancellationToken) }, cancellationToken);
+    }
+
+    public async Task PublishServerCharacterSettings(CancellationToken cancellationToken = default)
+    {
+        var socket = _socket;
+        if (socket?.State != WebSocketState.Open) return;
+        await Send(socket, new { type = "serverCharacterSettings", payload = await characterSettings.Payload(cancellationToken) }, cancellationToken);
+    }
+
     private async Task ReceiveLoop(WebSocket socket, CancellationToken cancellationToken)
     {
         var buffer = new byte[64 * 1024];
@@ -107,6 +122,10 @@ public sealed class AgentGateway(ServerState state, EventBus events, ClientModMa
                     await state.SetAgent(true, String(payload, "version"), String(payload, "gameVersion"));
                     try { await PublishClientManifest(cancellationToken); }
                     catch (Exception error) { logger.LogError(error, "Could not publish the client mod manifest to the server agent."); }
+                    try { await PublishServerMessages(cancellationToken); }
+                    catch (Exception error) { logger.LogError(error, "Could not publish server message templates to the server agent."); }
+                    try { await PublishServerCharacterSettings(cancellationToken); }
+                    catch (Exception error) { logger.LogError(error, "Could not publish server-character settings to the server agent."); }
                     break;
                 case "snapshot":
                     if (payload.TryGetProperty("players", out var players))

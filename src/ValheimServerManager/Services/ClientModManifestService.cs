@@ -9,7 +9,7 @@ namespace ValheimServerManager.Services;
 public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfiguration configuration)
 {
     private const string SettingPrefix = "client-mod-sync:";
-    private const string CompanionCoordinate = "ValheimServerManager-ValheimServerManagerClient-1.3.0";
+    private const string CompanionCoordinate = "ValheimServerManager-ValheimServerManagerClient-1.4.9";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _dataPath = configuration["VSM_DATA_PATH"] ?? "/data/manager";
 
@@ -74,7 +74,7 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
 
     private async Task<ClientManifestPackage> Companion(CancellationToken cancellationToken)
     {
-        var path = Path.Combine(_dataPath, "downloads", "ValheimServerManagerClient-1.3.0.zip");
+        var path = Path.Combine(_dataPath, "downloads", "ValheimServerManagerClient-1.4.9.zip");
         if (!File.Exists(path)) throw new FileNotFoundException("The VSM client companion artifact is missing.", path);
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
         if (bytes.Length > 4 * 1024 * 1024) throw new InvalidDataException("The VSM client companion exceeds the inline package limit.");
@@ -82,7 +82,7 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
             CompanionCoordinate,
             "ValheimServerManager",
             "ValheimServerManagerClient",
-            "1.3.0",
+            "1.4.9",
             "",
             bytes.LongLength,
             [],
