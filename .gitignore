@@ -8,7 +8,7 @@ web/vite.config.d.ts
 .idea/
 .DS_Store
 .env
-data/
+/data/
 artifacts/
 !plugins/artifacts/
 plugins/artifacts/*
