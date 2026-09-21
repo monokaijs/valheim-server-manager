@@ -1,0 +1,81 @@
+name: Publish to Thunderstore
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thunderstore-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends lib32gcc-s1 lib32stdc++6
+
+      - name: Download Valheim dedicated server references
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .steamcmd .valheim
+          curl --fail --location --silent --show-error \
+            https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
+            | tar -xz -C .steamcmd
+          ./.steamcmd/steamcmd.sh \
+            +force_install_dir "$GITHUB_WORKSPACE/.valheim" \
+            +login anonymous \
+            +app_update 896660 validate \
+            +quit
+
+      - name: Download BepInEx references
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .bepinex
+          curl --fail --location --silent --show-error \
+            https://thunderstore.io/package/download/denikson/BepInExPack_Valheim/5.4.2350/ \
+            --output .bepinex.zip
+          unzip -q .bepinex.zip -d .bepinex
+
+      - name: Build Server Manager package files
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet build plugins/ValheimServerManager.Server/ValheimServerManager.Server.csproj \
+            --configuration Release \
+            --property:ValheimManaged="$GITHUB_WORKSPACE/.valheim/valheim_server_Data/Managed" \
+            --property:BepInExRoot="$GITHUB_WORKSPACE/.bepinex/BepInExPack_Valheim/BepInEx" \
+            --output .release/BepInEx/plugins/ServerManager
+          find .release -type f -name '*.pdb' -delete
+          python3 plugins/make_icon.py thunderstore/icon.png
+
+      - name: Install Thunderstore CLI
+        shell: bash
+        run: dotnet tool install tcli --tool-path ./.tcli --version 0.2.4
+
+      - name: Publish package
+        env:
+          TCLI_AUTH_TOKEN: ${{ secrets.THUNDERSTORE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TCLI_AUTH_TOKEN"
+          ./.tcli/tcli publish --config-path thunderstore.toml

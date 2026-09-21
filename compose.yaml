@@ -1,0 +1,38 @@
+services:
+  valheim-manager:
+    build: .
+    container_name: valheim-server-manager
+    restart: unless-stopped
+    environment:
+      SERVER_NAME: ${SERVER_NAME:-Valheim Server}
+      SERVER_WORLD: ${SERVER_WORLD:-Dedicated}
+      SERVER_PASSWORD: ${SERVER_PASSWORD:-}
+      SERVER_PORT: ${SERVER_PORT:-2456}
+      SERVER_PUBLIC: ${SERVER_PUBLIC:-1}
+      SERVER_CROSSPLAY: ${SERVER_CROSSPLAY:-false}
+      VSM_UPDATE_ON_START: ${VSM_UPDATE_ON_START:-true}
+      VSM_PUBLIC_URL: ${VSM_PUBLIC_URL:-}
+    ports:
+      - "${VSM_HTTP_PORT:-8080}:8080/tcp"
+      - "${SERVER_PORT:-2456}:${SERVER_PORT:-2456}/udp"
+      - "${SERVER_QUERY_PORT:-2457}:${SERVER_QUERY_PORT:-2457}/udp"
+      - "${SERVER_EXTRA_PORT:-2458}:${SERVER_EXTRA_PORT:-2458}/udp"
+    volumes:
+      - server-files:/data/server
+      - worlds:/data/worlds
+      - manager-data:/data/manager
+      - server-logs:/data/logs
+      - bepinex:/data/server/BepInEx
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 5m
+
+volumes:
+  server-files:
+  worlds:
+  manager-data:
+  server-logs:
+  bepinex:

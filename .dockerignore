@@ -1,0 +1,6 @@
+.git
+.idea
+.env
+**/bin
+**/obj
+web/node_modules

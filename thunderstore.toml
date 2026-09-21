@@ -1,0 +1,33 @@
+[config]
+schemaVersion = "0.0.1"
+
+[package]
+namespace = "Creaton"
+name = "Server_Manager"
+versionNumber = "1.5.0"
+description = "Self-hosted Valheim server management agent with live administration, mod control, events, and server-owned characters."
+websiteUrl = "https://github.com/monokaijs/valheim-server-manager"
+containsNsfwContent = false
+
+[package.dependencies]
+denikson-BepInExPack_Valheim = "5.4.2350"
+
+[build]
+icon = "./thunderstore/icon.png"
+readme = "./thunderstore/README.md"
+outdir = "./build"
+
+[[build.copy]]
+source = "./.release/BepInEx"
+target = "BepInEx"
+
+[[build.copy]]
+source = "./thunderstore/CHANGELOG.md"
+target = "CHANGELOG.md"
+
+[publish]
+repository = "https://thunderstore.io"
+communities = ["valheim"]
+
+[publish.categories]
+valheim = ["server-side", "utility", "mods"]
