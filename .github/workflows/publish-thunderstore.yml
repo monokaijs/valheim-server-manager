@@ -15,7 +15,7 @@ on:
           - major
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: thunderstore-publish
@@ -28,6 +28,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v5
@@ -42,9 +44,14 @@ jobs:
           set -euo pipefail
 
           base_version=$(sed -n 's/^versionNumber = "\([0-9][0-9.]*\)"$/\1/p' thunderstore.toml)
-          package_url=https://thunderstore.io/api/experimental/package/Creaton/Server_Manager/
-          if package_json=$(curl --fail --location --silent --show-error "$package_url"); then
-            base_version=$(jq -er '.latest.version_number' <<<"$package_json")
+          latest_tag=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+          if [[ -n "$latest_tag" ]]; then
+            base_version=${latest_tag#v}
+          else
+            package_url=https://thunderstore.io/api/experimental/package/Creaton/Server_Manager/
+            if package_json=$(curl --fail --location --silent "$package_url"); then
+              base_version=$(jq -er '.latest.version_number' <<<"$package_json")
+            fi
           fi
 
           IFS=. read -r major minor patch <<<"$base_version"
@@ -133,3 +140,12 @@ jobs:
           ./.tcli/tcli publish \
             --config-path thunderstore.toml \
             --package-version "$RELEASE_VERSION"
+
+      - name: Record published version
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag --annotate "v$RELEASE_VERSION" --message "Server Manager $RELEASE_VERSION"
+          git push origin "v$RELEASE_VERSION"

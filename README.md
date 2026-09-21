@@ -157,7 +157,7 @@ The smoke stack uses its own Compose project and volumes, waits for the plugin h
 
 The **Publish to Thunderstore** GitHub Actions workflow is manually triggered from the repository's Actions page. Choose whether to increment the latest published version's patch, minor, or major component. The workflow downloads the current Valheim dedicated-server and BepInEx references, builds the server agent with the calculated version, packages it as **Server Manager** (`Creaton-Server_Manager` on Thunderstore), and publishes it to the Valheim community. Its BepInEx plugin ID is `dev.creaton.valheim-server-manager`.
 
-For the first release, the calculation starts from `thunderstore.toml`; later releases use Thunderstore's latest published version. The workflow authenticates with the repository's `THUNDERSTORE_TOKEN` Actions secret.
+For the first release, the calculation starts from `thunderstore.toml`; each successful release records a `vX.Y.Z` Git tag that becomes the base for the next increment. The workflow authenticates with the repository's `THUNDERSTORE_TOKEN` Actions secret.
 
 ## Operational notes
 
