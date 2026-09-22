@@ -13,7 +13,7 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
     private const string SettingPrefix = "client-mod-sync:";
     private const string ServerCharactersEnabledSetting = "server-characters.enabled";
     private const string InstanceKey = SettingPrefix + "instance-id";
-    private const string RuntimeCoordinate = "Creaton-Server_Manager-2.1.4";
+    private const string RuntimeCoordinate = "Creaton-Server_Manager-2.1.5";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _dataPath = configuration["VSM_DATA_PATH"] ?? "/data/manager";
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -144,11 +144,11 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
 
     private async Task<ClientManifestPackage> Runtime(CancellationToken cancellationToken)
     {
-        var path = Path.Combine(_dataPath, "runtime", "ValheimServerManager-2.1.4-client.zip");
+        var path = Path.Combine(_dataPath, "runtime", "ValheimServerManager-2.1.5-client.zip");
         if (!File.Exists(path)) throw new FileNotFoundException("The VSM client runtime artifact is missing.", path);
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
         if (bytes.Length > 4 * 1024 * 1024) throw new InvalidDataException("The VSM client runtime exceeds the inline package limit.");
-        return new(RuntimeCoordinate, "Creaton", "Server_Manager", "2.1.4", "", bytes.LongLength, [],
+        return new(RuntimeCoordinate, "Creaton", "Server_Manager", "2.1.5", "", bytes.LongLength, [],
             Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), Convert.ToBase64String(bytes));
     }
 
