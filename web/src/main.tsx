@@ -57,7 +57,13 @@ type CharacterSnapshot = {
 }
 type ServerCharacter = { platformId: string; characterName: string; fileName: string; size: number; modifiedAt: string; sha256: string }
 type CharacterStore = { installed: boolean; importAvailable: boolean; serverStatus: string; characters: ServerCharacter[] }
-type ServerAccessSettings = { passwordEnabled: boolean; hasPassword: boolean; publicListing: boolean; serverName: string; port: number }
+type ServerSettingsData = {
+  passwordEnabled: boolean; hasPassword: boolean; publicListing: boolean; serverName: string; worldName: string; port: number
+  crossplay: boolean; instanceId: string; saveIntervalSeconds: number; backupCount: number; backupShortSeconds: number
+  backupLongSeconds: number; maxPlayers: number; manageWorldModifiers: boolean; preset: string; combatModifier: string
+  deathPenaltyModifier: string; resourceModifier: string; raidModifier: string; portalModifier: string
+  noBuildCost: boolean; playerEvents: boolean; passiveMobs: boolean; noMap: boolean
+}
 type ServerCharacterSettings = { enabled: boolean; acceptFirstJoinProfile: boolean; rejectPreviouslyUsedCharacters: boolean; backupsToKeep: number; clientGraceSeconds: number }
 type ApiToken = { id: string; name: string; prefix: string; scopes: string[]; createdAt: string; lastUsedAt?: string; revokedAt?: string }
 type CreatedApiToken = ApiToken & { token: string }
@@ -473,22 +479,65 @@ function AuditPage() {
 }
 
 function ServerAccessSettingsCard() {
-  const { data, error, load } = useLoad<ServerAccessSettings>("/api/v1/settings/server-access")
-  const [passwordEnabled, setPasswordEnabled] = useState(true)
+  const { data, error, load } = useLoad<ServerSettingsData>("/api/v1/settings/server-access")
+  const [form, setForm] = useState<ServerSettingsData | null>(null)
   const [password, setPassword] = useState("")
   const [busy, setBusy] = useState(false)
-  useEffect(() => { if (data) setPasswordEnabled(data.passwordEnabled) }, [data])
+  useEffect(() => { if (data) setForm(data) }, [data])
+  const set = <K extends keyof ServerSettingsData>(key: K, value: ServerSettingsData[K]) => setForm(current => current ? { ...current, [key]: value } : current)
   const save = async (event: FormEvent) => {
     event.preventDefault()
+    if (!form) return
     setBusy(true)
     try {
-      await post<ServerAccessSettings>("/api/v1/settings/server-access", { passwordEnabled, password: password || null })
+      const { hasPassword: _hasPassword, port: _port, ...settings } = form
+      await post<ServerSettingsData>("/api/v1/settings/server-access", { ...settings, password: password || null })
       setPassword("")
-      toast.success("Access mode saved; Valheim restarted")
+      toast.success("Server settings saved; Valheim restarted")
       await load()
     } catch (cause) { toast.error((cause as Error).message) } finally { setBusy(false) }
   }
-  return <Card><CardHeader><CardTitle>Connection protection</CardTitle><CardDescription>Choose whether joining requires a Valheim password. Saving performs a world save and controlled game restart.</CardDescription></CardHeader><CardContent><ErrorAlert text={error} /><form onSubmit={save} className="space-y-4"><div className="flex items-center justify-between rounded-lg border p-4"><div><p className="text-sm font-medium">Require a server password</p><p className="text-xs text-muted-foreground">{passwordEnabled ? "The server may remain visible in the public browser." : "Passwordless servers are forced to private/unlisted mode and joined by IP."}</p></div><Switch checked={passwordEnabled} onCheckedChange={setPasswordEnabled} /></div>{passwordEnabled && <div className="space-y-1.5"><Label htmlFor="server-password">New password</Label><Input id="server-password" type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder={data?.hasPassword ? "Leave blank to keep the current password" : "At least 5 characters"} /><p className="text-[11px] text-muted-foreground">Stored encrypted. It must be at least five characters and cannot appear in the server name.</p></div>}<div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/30 p-3 text-xs"><span><strong>{data?.serverName || "Server"}</strong> · port {data?.port || "—"}</span><Badge variant="outline">{passwordEnabled ? data?.publicListing ? "Password · listed" : "Password · unlisted" : "No password · unlisted"}</Badge></div><Button disabled={busy}>{busy ? <RefreshCw className="animate-spin" /> : <KeyRound />}{busy ? "Saving and restarting…" : "Save & restart server"}</Button></form></CardContent></Card>
+  if (!form) return <Card><CardHeader><CardTitle>Server configuration</CardTitle></CardHeader><CardContent><ErrorAlert text={error} /><p className="text-sm text-muted-foreground">Loading settings…</p></CardContent></Card>
+  const select = (key: keyof ServerSettingsData, value: string) => set(key, (value === "default" ? "" : value) as never)
+  return <Card><CardHeader><CardTitle>Server configuration</CardTitle><CardDescription>Official dedicated-server settings plus an optional modded player-cap override. Saving performs a world save and controlled restart.</CardDescription></CardHeader><CardContent><ErrorAlert text={error} /><form onSubmit={save} className="space-y-6">
+    <section className="space-y-4"><div><p className="text-sm font-medium">Realm and networking</p><p className="text-xs text-muted-foreground">Changing the world selects an existing save with that name or creates it on first launch.</p></div><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="space-y-1.5"><Label htmlFor="server-name">Server name</Label><Input id="server-name" maxLength={64} value={form.serverName} onChange={event => set("serverName", event.target.value)} /></div>
+      <div className="space-y-1.5"><Label htmlFor="world-name">World name</Label><Input id="world-name" maxLength={64} value={form.worldName} onChange={event => set("worldName", event.target.value)} /></div>
+      <div className="space-y-1.5"><Label htmlFor="server-port">Game port</Label><Input id="server-port" value={form.port} disabled /><p className="text-[11px] text-muted-foreground">Deployment-owned; change SERVER_PORT and Docker mappings together.</p></div>
+      <div className="space-y-1.5"><Label htmlFor="max-players">Player limit</Label><Input id="max-players" type="number" min={1} max={100} value={form.maxPlayers} onChange={event => set("maxPlayers", Number(event.target.value))} /><p className="text-[11px] text-muted-foreground">Vanilla supports 10. Higher values use VSM's server-side override and are unsupported by Iron Gate.</p></div>
+      <div className="space-y-1.5"><Label htmlFor="instance-id">Crossplay instance ID</Label><Input id="instance-id" maxLength={64} value={form.instanceId} onChange={event => set("instanceId", event.target.value)} placeholder="Optional; useful for multiple servers" /></div>
+    </div><div className="grid gap-3 sm:grid-cols-2">
+      <SettingSwitch title="Crossplay backend" detail="Use PlayFab so supported non-Steam platforms can join. Local/loopback connections are unavailable." checked={form.crossplay} onChange={value => set("crossplay", value)} />
+      <SettingSwitch title="Public server listing" detail={form.passwordEnabled ? "Advertise the server in the browser." : "Passwordless servers are always forced unlisted."} checked={form.passwordEnabled && form.publicListing} disabled={!form.passwordEnabled} onChange={value => set("publicListing", value)} />
+    </div></section>
+    <section className="space-y-4 border-t pt-6"><p className="text-sm font-medium">Connection protection</p><SettingSwitch title="Require a server password" detail={form.passwordEnabled ? "Required for public listing." : "Players join the private server by address or join code."} checked={form.passwordEnabled} onChange={value => set("passwordEnabled", value)} />{form.passwordEnabled && <div className="space-y-1.5 sm:max-w-md"><Label htmlFor="server-password">New password</Label><Input id="server-password" type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder={form.hasPassword ? "Leave blank to keep the current password" : "At least 5 characters"} /><p className="text-[11px] text-muted-foreground">Stored encrypted; at least five characters and not contained in the server name.</p></div>}</section>
+    <section className="space-y-4 border-t pt-6"><div><p className="text-sm font-medium">World saves and backups</p><p className="text-xs text-muted-foreground">Intervals are seconds. VSM keeps Valheim's native automatic backup system enabled.</p></div><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <NumberField id="save-interval" label="Save interval" value={form.saveIntervalSeconds} min={60} max={86400} onChange={value => set("saveIntervalSeconds", value)} />
+      <NumberField id="backup-count" label="Backups kept" value={form.backupCount} min={1} max={50} onChange={value => set("backupCount", value)} />
+      <NumberField id="backup-short" label="First backup age" value={form.backupShortSeconds} min={60} max={604800} onChange={value => set("backupShortSeconds", value)} />
+      <NumberField id="backup-long" label="Later backup spacing" value={form.backupLongSeconds} min={60} max={2592000} onChange={value => set("backupLongSeconds", value)} />
+    </div></section>
+    <section className="space-y-4 border-t pt-6"><SettingSwitch title="Manage gameplay and exploration modifiers" detail="Apply the selected preset and overrides at every startup. Leave off to preserve modifiers already stored in the world." checked={form.manageWorldModifiers} onChange={value => set("manageWorldModifiers", value)} /><div className={cn("space-y-4", !form.manageWorldModifiers && "pointer-events-none opacity-50")}>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"><SelectField label="Preset" value={form.preset} options={["normal", "casual", "easy", "hard", "hardcore", "immersive", "hammer"]} onChange={value => select("preset", value)} /><SelectField label="Combat" value={form.combatModifier} options={["default", "veryeasy", "easy", "hard", "veryhard"]} onChange={value => select("combatModifier", value)} /><SelectField label="Death penalty" value={form.deathPenaltyModifier} options={["default", "casual", "veryeasy", "easy", "hard", "hardcore"]} onChange={value => select("deathPenaltyModifier", value)} /><SelectField label="Resources" value={form.resourceModifier} options={["default", "muchless", "less", "more", "muchmore", "most"]} onChange={value => select("resourceModifier", value)} /><SelectField label="Raids" value={form.raidModifier} options={["default", "none", "muchless", "less", "more", "muchmore"]} onChange={value => select("raidModifier", value)} /><SelectField label="Portals" value={form.portalModifier} options={["default", "casual", "hard", "veryhard"]} onChange={value => select("portalModifier", value)} /></div>
+      <div className="grid gap-3 sm:grid-cols-2"><SettingSwitch title="No build cost" detail="Building consumes no resources." checked={form.noBuildCost} onChange={value => set("noBuildCost", value)} /><SettingSwitch title="Player-based raids" detail="Raid eligibility follows nearby player progression." checked={form.playerEvents} onChange={value => set("playerEvents", value)} /><SettingSwitch title="Passive enemies" detail="Creatures remain passive until provoked." checked={form.passiveMobs} onChange={value => set("passiveMobs", value)} /><SettingSwitch title="No map" detail="Disable the map for an exploration-focused world." checked={form.noMap} onChange={value => set("noMap", value)} /></div>
+    </div></section>
+    {form.maxPlayers > 10 && <Alert><Users /><AlertTitle>Modded player capacity</AlertTitle><AlertDescription>Counts above 10 patch Valheim's admission and backend-advertisement limits. Test performance and mod compatibility before inviting a large group.</AlertDescription></Alert>}
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/30 p-3 text-xs"><span><strong>{form.serverName}</strong> · {form.worldName} · UDP {form.port}–{form.port + 2}</span><Badge variant="outline">{form.crossplay ? "Crossplay" : "Steam"} · {form.passwordEnabled ? form.publicListing ? "listed" : "unlisted" : "passwordless/unlisted"}</Badge></div>
+    <Button disabled={busy}>{busy ? <RefreshCw className="animate-spin" /> : <Server />}{busy ? "Saving and restarting…" : "Save all & restart server"}</Button>
+  </form></CardContent></Card>
+}
+
+function SettingSwitch({ title, detail, checked, disabled, onChange }: { title: string; detail: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
+  return <div className="flex items-center justify-between gap-4 rounded-lg border p-4"><div><p className="text-sm font-medium">{title}</p><p className="text-xs text-muted-foreground">{detail}</p></div><Switch checked={checked} disabled={disabled} onCheckedChange={onChange} /></div>
+}
+
+function NumberField({ id, label, value, min, max, onChange }: { id: string; label: string; value: number; min: number; max: number; onChange: (value: number) => void }) {
+  return <div className="space-y-1.5"><Label htmlFor={id}>{label}</Label><Input id={id} type="number" min={min} max={max} value={value} onChange={event => onChange(Number(event.target.value))} /></div>
+}
+
+function SelectField({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
+  const display = (value || "default").replace(/([a-z])([A-Z])/g, "$1 $2").replace("veryeasy", "very easy").replace("muchless", "much less").replace("muchmore", "much more")
+  return <div className="space-y-1.5"><Label>{label}</Label><Select value={value || "default"} onValueChange={onChange}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{options.map(option => <SelectItem key={option} value={option}><span className="capitalize">{option === (value || "default") ? display : option.replace("veryeasy", "very easy").replace("muchless", "much less").replace("muchmore", "much more")}</span></SelectItem>)}</SelectContent></Select></div>
 }
 
 function ServerCharacterSettingsCard() {

@@ -442,15 +442,27 @@ public sealed class CoreTests
         await using (var scope = provider.CreateAsyncScope()) await scope.ServiceProvider.GetRequiredService<ManagerDbContext>().Database.EnsureCreatedAsync();
         var settings = provider.GetRequiredService<ServerSettingsService>();
 
-        await settings.Set(false, null);
+        var defaults = await settings.Get();
+        ServerSettingsMutation Mutation(bool passwordEnabled, string? password, bool manageModifiers = false) => new(
+            passwordEnabled, password, true, defaults.ServerName, defaults.WorldName, true, "realm-1",
+            900, 8, 3600, 21600, 16, manageModifiers, "immersive", "hard", "hardcore", "more", "less", "hard",
+            true, true, true, true);
+
+        await settings.Set(Mutation(false, null));
         var passwordless = (await settings.BuildArguments()).ToList();
         Assert.DoesNotContain("-password", passwordless);
         Assert.Equal("0", passwordless[passwordless.IndexOf("-public") + 1]);
+        Assert.Contains("-crossplay", passwordless);
+        Assert.Equal("900", passwordless[passwordless.IndexOf("-saveinterval") + 1]);
+        Assert.DoesNotContain("-preset", passwordless);
 
-        await settings.Set(true, "different-secret");
+        await settings.Set(Mutation(true, "different-secret", true));
         var protectedServer = (await settings.BuildArguments()).ToList();
         Assert.Equal("different-secret", protectedServer[protectedServer.IndexOf("-password") + 1]);
         Assert.Equal("1", protectedServer[protectedServer.IndexOf("-public") + 1]);
+        Assert.Equal("immersive", protectedServer[protectedServer.IndexOf("-preset") + 1]);
+        Assert.Contains("nomap", protectedServer);
+        Assert.Equal(16, await settings.GetMaxPlayers());
         Directory.Delete(root, true);
     }
 

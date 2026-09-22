@@ -304,13 +304,14 @@ api.MapDelete("/mods/{id:guid}", async (Guid id, ModService mods, CancellationTo
 api.MapPost("/mods/apply", async (ModService mods, CancellationToken ct) => { await mods.Apply(ct); return Results.NoContent(); }).RequireAntiforgery();
 
 api.MapGet("/settings/server-access", async (ServerSettingsService settings, CancellationToken ct) => Results.Ok(await settings.Get(ct)));
-api.MapPost("/settings/server-access", async (ServerAccessMutation request, ServerSettingsService settings, ProcessSupervisor process, AgentGateway agent, AuditService audit, CancellationToken ct) =>
+api.MapPost("/settings/server-access", async (ServerSettingsMutation request, ServerSettingsService settings, ProcessSupervisor process, AgentGateway agent, AuditService audit, CancellationToken ct) =>
 {
-    await settings.Set(request.PasswordEnabled, request.Password, ct);
+    var saved = await settings.Set(request, ct);
     if (agent.IsConnected) await agent.Command("world.save", new { }, TimeSpan.FromSeconds(60));
     await process.Restart(TimeSpan.Zero, ct);
-    await audit.Write("server.access.update", "valheim", "success", request.PasswordEnabled ? "password-enabled" : "passwordless-private");
-    return Results.Ok(await settings.Get(ct));
+    await audit.Write("server.settings.update", "valheim", "success",
+        $"world={saved.WorldName};crossplay={saved.Crossplay};public={saved.PublicListing};maxPlayers={saved.MaxPlayers};preset={(saved.ManageWorldModifiers ? saved.Preset : "unmanaged")}");
+    return Results.Ok(saved);
 }).RequireAntiforgery();
 
 api.MapGet("/settings/server-characters", async (ServerCharacterSettingsService settings, CancellationToken ct) => Results.Ok(await settings.Get(ct)));
@@ -461,7 +462,6 @@ static string NormalizeRegistrationId(string value)
 
 public sealed record ThunderstoreInstall(string Namespace, string Name, string Version);
 public sealed record ClientSyncMutation(bool Required);
-public sealed record ServerAccessMutation(bool PasswordEnabled, string? Password);
 public sealed record ModerationRequest(string? Reason);
 public sealed record ApiTokenCreate(string Name, string[] Scopes);
 public sealed record ModConfigUpdate(string File, string Revision, ModConfigValueMutation[] Values);

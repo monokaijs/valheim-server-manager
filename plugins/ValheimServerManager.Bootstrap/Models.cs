@@ -46,6 +46,7 @@ internal sealed class BootstrapState
     [DataMember(Name = "packages", IsRequired = true)] public List<string> Packages { get; set; } = new();
     [DataMember(Name = "managedConfigs", IsRequired = true)] public List<string> ManagedConfigs { get; set; } = new();
     [DataMember(Name = "managedConfigHashes", EmitDefaultValue = false)] public Dictionary<string, string> ManagedConfigHashes { get; set; } = new();
+    [DataMember(Name = "infrastructureHashes", EmitDefaultValue = false)] public Dictionary<string, string> InfrastructureHashes { get; set; } = new();
 }
 
 [DataContract]

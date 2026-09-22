@@ -62,6 +62,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private ConfigEntry<int> _characterBackups;
     private ConfigEntry<int> _clientGraceSeconds;
     internal static ServerPlugin Instance { get; private set; }
+    internal static int MaxPlayers { get; private set; } = 10;
 
     private void Awake()
     {
@@ -80,11 +81,17 @@ public sealed class ServerPlugin : BaseUnityPlugin
         _rejectPreviouslyUsedCharacters = Config.Bind("ServerCharacters", "RejectPreviouslyUsedCharacters", false, "When accepting a first-join profile, require a character that has never entered another world or server.");
         _characterBackups = Config.Bind("ServerCharacters", "BackupsToKeep", 10, new ConfigDescription("Rolling native profile backups per character.", new AcceptableValueRange<int>(1, 50)));
         _clientGraceSeconds = Config.Bind("ServerCharacters", "ClientGraceSeconds", 20, new ConfigDescription("Seconds to wait for the client runtime handshake before rejecting a player while server-owned characters are enabled.", new AcceptableValueRange<int>(5, 120)));
+        if (int.TryParse(Environment.GetEnvironmentVariable("VSM_MAX_PLAYERS"), out var configuredMaxPlayers))
+            MaxPlayers = Math.Max(1, Math.Min(100, configuredMaxPlayers));
         _lifetime = new CancellationTokenSource();
         Patch(typeof(ClientModRelayPatch)); Patch(typeof(AdmissionPatch)); Patch(typeof(PeerInfoPatch)); Patch(typeof(CharacterIdPatch)); Patch(typeof(DisconnectPatch));
         Patch(typeof(WorldLoadPatch)); Patch(typeof(SaveStartPatch)); Patch(typeof(SaveCompletePatch)); Patch(typeof(GlobalKeyPatch));
         Patch(typeof(RaidPatch)); Patch(typeof(DayPatch)); Patch(typeof(SleepPatch)); Patch(typeof(BossDeathPatch)); Patch(typeof(ChatPatch));
+        Patch(typeof(PlayerLimitPeerInfoPatch)); Patch(typeof(PlayerLimitCountPatch));
+        Patch(typeof(PlayFabLobbyLimitPatch)); Patch(typeof(PlayFabNetworkLimitPatch));
+        Patch(typeof(SteamServerLimitPatch)); Patch(typeof(SteamLobbyLimitPatch));
         Task.Run(() => ConnectionLoop(_lifetime.Token));
+        Logger.LogInfo($"Server player limit set to {MaxPlayers}." + (MaxPlayers > 10 ? " Values above 10 are a modded, unsupported Valheim configuration." : ""));
         Logger.LogInfo("Server agent loaded; waiting for dedicated-server networking.");
     }
 
@@ -869,5 +876,80 @@ public sealed class ServerPlugin : BaseUnityPlugin
             var peer = ZNet.instance?.GetPeers().FirstOrDefault(item => item.m_uid == sender);
             Instance.Event(eventType, new { player = user.Name, platformId = peer?.m_socket?.GetHostName(), peerId = sender, message = text });
         }
+    }
+
+    // Valheim's admission check still compares GetNrOfPlayers() with its vanilla constant of 10.
+    // During that one check, map the configured capacity to the values the game already understands.
+    [HarmonyPatch(typeof(ZNet), "RPC_PeerInfo")]
+    private static class PlayerLimitPeerInfoPatch
+    {
+        [ThreadStatic] private static int _depth;
+        internal static bool IsChecking => _depth > 0;
+        private static void Prefix() => _depth++;
+        private static void Finalizer() { if (_depth > 0) _depth--; }
+    }
+
+    [HarmonyPatch(typeof(ZNet), "GetNrOfPlayers")]
+    private static class PlayerLimitCountPatch
+    {
+        private static void Postfix(ref int __result)
+        {
+            if (!PlayerLimitPeerInfoPatch.IsChecking || ZNet.instance == null || !ZNet.instance.IsServer()) return;
+            if (__result >= MaxPlayers) __result = 10;
+            else if (__result >= 10) __result = 9;
+        }
+    }
+
+    // Backend advertisements have their own capacities. Reflection keeps this compatible with
+    // both Steam-only and PlayFab/crossplay server builds without hard assembly references.
+    [HarmonyPatch]
+    private static class PlayFabLobbyLimitPatch
+    {
+        private static IEnumerable<MethodBase> TargetMethods() => NamedMethods("PlayFab.PlayFabMultiplayerAPI", "CreateLobby");
+        private static void Prefix(object __0) => SetCapacity(__0, "MaxPlayers");
+    }
+
+    [HarmonyPatch]
+    private static class PlayFabNetworkLimitPatch
+    {
+        private static IEnumerable<MethodBase> TargetMethods() => NamedMethods("PlayFab.Party.PlayFabMultiplayerManager", "CreateAndJoinNetwork");
+        private static void Prefix(object __0) => SetCapacity(__0, "MaxPlayerCount");
+    }
+
+    [HarmonyPatch]
+    private static class SteamServerLimitPatch
+    {
+        private static IEnumerable<MethodBase> TargetMethods() => NamedMethods("Steamworks.SteamGameServer", "SetMaxPlayerCount")
+            .Where(method => method.GetParameters()[0].ParameterType == typeof(int));
+        private static void Prefix(ref int __0) => __0 = MaxPlayers;
+    }
+
+    [HarmonyPatch]
+    private static class SteamLobbyLimitPatch
+    {
+        private static IEnumerable<MethodBase> TargetMethods() => NamedMethods("Steamworks.SteamMatchmaking", "CreateLobby")
+            .Where(method => method.GetParameters().Length > 1 && method.GetParameters()[1].ParameterType == typeof(int));
+        private static void Prefix(ref int __1) => __1 = MaxPlayers;
+    }
+
+    private static IEnumerable<MethodBase> NamedMethods(string typeName, string methodName)
+    {
+        var type = AccessTools.TypeByName(typeName);
+        return type == null
+            ? Enumerable.Empty<MethodBase>()
+            : type.GetMethods(AccessTools.all).Where(method => method.Name == methodName && method.GetParameters().Length > 0);
+    }
+
+    private static void SetCapacity(object target, string memberName)
+    {
+        if (target == null) return;
+        var property = AccessTools.Property(target.GetType(), memberName);
+        if (property != null && property.CanWrite)
+        {
+            property.SetValue(target, Convert.ChangeType(MaxPlayers, property.PropertyType), null);
+            return;
+        }
+        var field = AccessTools.Field(target.GetType(), memberName);
+        if (field != null) field.SetValue(target, Convert.ChangeType(MaxPlayers, field.FieldType));
     }
 }

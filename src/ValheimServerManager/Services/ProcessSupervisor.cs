@@ -43,6 +43,7 @@ public sealed class ProcessSupervisor(ServerState state, EventBus events, Server
                 CreateNoWindow = true
             };
             foreach (var argument in await settings.BuildArguments(cancellationToken)) info.ArgumentList.Add(argument);
+            info.Environment["VSM_MAX_PLAYERS"] = (await settings.GetMaxPlayers(cancellationToken)).ToString(System.Globalization.CultureInfo.InvariantCulture);
             info.Environment["DOORSTOP_ENABLED"] = "1";
             info.Environment["DOORSTOP_TARGET_ASSEMBLY"] = "./BepInEx/core/BepInEx.Preloader.dll";
             info.Environment["LD_LIBRARY_PATH"] = "./doorstop_libs:./linux64:" + (Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? "");

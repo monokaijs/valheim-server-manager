@@ -63,7 +63,9 @@ rm -rf "$package"
 
 client_runtime="$(mktemp -d)"
 mkdir -p "$client_runtime/BepInEx/plugins/ValheimServerManager"
-cp /tmp/vsm-client/ValheimServerManager.Client.dll /tmp/vsm-client/Newtonsoft.Json.dll "$client_runtime/BepInEx/plugins/ValheimServerManager/"
+cp /tmp/vsm-client/ValheimServerManager.Client.dll /tmp/vsm-client/Newtonsoft.Json.dll \
+  /tmp/vsm-runtime/ValheimServerManagerRuntimeUpdater.dll \
+  "$client_runtime/BepInEx/plugins/ValheimServerManager/"
 printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"Valheim Server Manager client runtime.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-5.4.2350\"]}" >"$client_runtime/manifest.json"
 printf '%s\n' '# Valheim Server Manager runtime' '' 'This client-targeted runtime is managed automatically by the installed Server Manager package.' >"$client_runtime/README.md"
 python3 /app/plugins/make_icon.py "$client_runtime/icon.png"

@@ -191,7 +191,7 @@ public static class BootstrapSynchronizer
         return SynchronizationResult.Applied(manifest.Revision, packagesChanged, true);
     }
 
-    private static void ApplyPendingLocked(BootstrapContext context)
+    internal static void ApplyPendingLocked(BootstrapContext context)
     {
         if (!File.Exists(context.PendingManifestPath)) return;
         BootstrapLog.Info("Applying the pending managed mod revision before plugin loading");
@@ -380,9 +380,12 @@ public static class BootstrapSynchronizer
         if (Directory.Exists(managedPlugins)) Directory.Move(managedPlugins, backupPlugins);
 
         var configBackups = new Dictionary<string, byte[]?>(StringComparer.OrdinalIgnoreCase);
+        var infrastructureBackups = new Dictionary<string, byte[]?>(StringComparer.OrdinalIgnoreCase);
         try
         {
             Directory.Move(stagedPlugins, managedPlugins);
+            var infrastructureHashes = PromoteManagedInfrastructure(
+                bepinexRoot, managedPlugins, manifest, previous.InfrastructureHashes, infrastructureBackups);
             ApplyPackageDefaults(bepinexRoot, stagedDefaults);
             ApplyManagedConfigs(bepinexRoot, manifest.Configs, previous.ManagedConfigs, configBackups);
             Json.WriteFile(statePath, new BootstrapState
@@ -393,6 +396,7 @@ public static class BootstrapSynchronizer
                 Packages = manifest.Packages.Select(package => package.Coordinate).ToList(),
                 ManagedConfigs = manifest.Configs.Select(config => config.Path).ToList(),
                 ManagedConfigHashes = manifest.Configs.ToDictionary(config => config.Path, config => config.Sha256, StringComparer.OrdinalIgnoreCase),
+                InfrastructureHashes = infrastructureHashes,
             });
             TryDeleteDirectory(backupPlugins);
         }
@@ -401,7 +405,71 @@ public static class BootstrapSynchronizer
             TryDeleteDirectory(managedPlugins);
             if (Directory.Exists(backupPlugins)) Directory.Move(backupPlugins, managedPlugins);
             RestoreConfigs(bepinexRoot, configBackups);
+            RestoreInfrastructure(infrastructureBackups);
             throw;
+        }
+    }
+
+    private static Dictionary<string, string> PromoteManagedInfrastructure(
+        string bepinexRoot,
+        string managedPlugins,
+        BootstrapManifest manifest,
+        IReadOnlyDictionary<string, string>? previousHashes,
+        IDictionary<string, byte[]?> backups)
+    {
+        var hashes = previousHashes == null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : previousHashes.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        var hasRuntime = manifest.Packages.Any(package =>
+            package.Namespace.Equals("Creaton", StringComparison.OrdinalIgnoreCase)
+            && package.PackageName.Equals("Server_Manager", StringComparison.OrdinalIgnoreCase));
+        if (!hasRuntime) return hashes;
+
+        const string relative = "plugins/ValheimServerManager/ValheimServerManagerRuntimeUpdater.dll";
+        var source = Path.Combine(managedPlugins, "Creaton-Server_Manager", "ValheimServerManager", "ValheimServerManagerRuntimeUpdater.dll");
+        if (!File.Exists(source)) return hashes; // Compatibility with manifests produced before updater self-management.
+        var destination = SafeInfrastructureTarget(bepinexRoot, relative);
+        backups[destination] = File.Exists(destination) ? File.ReadAllBytes(destination) : null;
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        var temporary = destination + ".vsm-new";
+        try
+        {
+            File.Copy(source, temporary, true);
+            AtomicFile.Replace(temporary, destination);
+            File.Delete(source); // Prevent BepInEx from discovering a duplicate updater GUID in the managed tree.
+            using var stream = File.OpenRead(destination);
+            hashes[relative] = Hex(SHA256.Create().ComputeHash(stream));
+            BootstrapLog.Info("Promoted the server-provided runtime updater before plugin loading");
+            return hashes;
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    private static string SafeInfrastructureTarget(string bepinexRoot, string relative)
+    {
+        const string allowed = "plugins/ValheimServerManager/ValheimServerManagerRuntimeUpdater.dll";
+        if (!relative.Equals(allowed, StringComparison.Ordinal))
+            throw new InvalidDataException("Unsupported managed infrastructure path: " + relative);
+        var root = Path.GetFullPath(bepinexRoot);
+        var target = Path.GetFullPath(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
+        if (!target.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Managed infrastructure escaped the BepInEx root");
+        return target;
+    }
+
+    private static void RestoreInfrastructure(IDictionary<string, byte[]?> backups)
+    {
+        foreach (var pair in backups)
+        {
+            if (pair.Value == null)
+            {
+                if (File.Exists(pair.Key)) File.Delete(pair.Key);
+            }
+            else
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(pair.Key)!);
+                File.WriteAllBytes(pair.Key, pair.Value);
+            }
         }
     }
 
@@ -495,6 +563,16 @@ public static class BootstrapSynchronizer
             if (!File.Exists(target)) return false;
             using var stream = File.OpenRead(target);
             if (!FixedTimeEquals(Hex(SHA256.Create().ComputeHash(stream)), pair.Value)) return false;
+        }
+        if (state.InfrastructureHashes != null)
+        {
+            foreach (var pair in state.InfrastructureHashes)
+            {
+                var target = SafeInfrastructureTarget(bepinexRoot, pair.Key);
+                if (!File.Exists(target)) return false;
+                using var stream = File.OpenRead(target);
+                if (!FixedTimeEquals(Hex(SHA256.Create().ComputeHash(stream)), pair.Value)) return false;
+            }
         }
         return true;
     }
