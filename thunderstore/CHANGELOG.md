@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Bundled the client runtime in the Server Manager package for updates through an external mod manager.
+- Added an in-game checklist for required and optional gameplay mods. Downloads require player approval, and the installer refuses to replace or remove installed packages.
+
 ## 1.6.6
 
 - Unified server installation and the client update receiver into one Server Manager package and version.

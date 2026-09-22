@@ -64,7 +64,7 @@ if [[ -f "$legacy_plugin_dir/ValheimServerManager.Server.dll" ||
 fi
 
 vsm_version="2.1.5"
-mkdir -p /data/server/BepInEx/plugins/ValheimServerManager /data/manager/downloads /data/manager/runtime
+mkdir -p /data/server/BepInEx/plugins/ValheimServerManager /data/manager/downloads
 dotnet build /app/plugins/ValheimServerManager.Server/ValheimServerManager.Server.csproj -c Release \
   -p:ValheimManaged=/data/server/valheim_server_Data/Managed -p:BepInExRoot=/data/server/BepInEx \
   -o /data/server/BepInEx/plugins/ValheimServerManager >/data/logs/server-plugin-build.log
@@ -81,30 +81,21 @@ dotnet build /app/plugins/ValheimServerManager.RuntimeUpdater/ValheimServerManag
   -o /tmp/vsm-runtime >/data/logs/runtime-updater-build.log
 
 package="$(mktemp -d)"
-mkdir -p "$package/BepInEx/patchers" "$package/BepInEx/plugins/ValheimServerManager" "$package/BepInEx/plugins/ValheimServerManager.Server"
+mkdir -p "$package/BepInEx/patchers" "$package/BepInEx/plugins/ValheimServerManager"
 cp /tmp/vsm-bootstrap/ValheimServerManagerBootstrap.dll "$package/BepInEx/patchers/"
 cp /tmp/vsm-runtime/ValheimServerManagerRuntimeUpdater.dll "$package/BepInEx/plugins/ValheimServerManager/"
+cp /tmp/vsm-client/ValheimServerManager.Client.dll "$package/BepInEx/plugins/ValheimServerManager/"
 cp /data/server/BepInEx/plugins/ValheimServerManager/ValheimServerManager.Server.dll \
   /data/server/BepInEx/plugins/ValheimServerManager/Newtonsoft.Json.dll \
-  "$package/BepInEx/plugins/ValheimServerManager.Server/"
-printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"One Server Manager package for dedicated servers and players, with automatic server-specific client synchronization.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-$bepinex_pack_version\"]}" >"$package/manifest.json"
-printf '%s\n' '# Valheim Server Manager' '' 'Install this single package. On a dedicated server it runs the management agent; on a player client it receives and safely stages the exact client runtime and required mods selected by that server.' >"$package/README.md"
+  "$package/BepInEx/plugins/ValheimServerManager/"
+printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"Server management and opt-in gameplay mod installation for players.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-$bepinex_pack_version\"]}" >"$package/manifest.json"
+printf '%s\n' '# Valheim Server Manager' '' 'Install this single package through your mod manager. The client plugin is bundled and updated through the mod manager. The in-game F8 checklist can install selected gameplay mods once; it does not update installed mods.' >"$package/README.md"
 python3 /app/plugins/make_icon.py "$package/icon.png"
 rm -f /data/manager/downloads/ValheimServerManagerClient-*.zip /data/manager/downloads/ValheimServerManagerServer-*.zip /data/manager/downloads/XomNghien-ServerModBootstrap-*.zip
 (cd "$package" && zip -qr "/data/manager/downloads/ValheimServerManager-$vsm_version.zip" .)
 rm -rf "$package"
 
-client_runtime="$(mktemp -d)"
-mkdir -p "$client_runtime/BepInEx/plugins/ValheimServerManager"
-cp /tmp/vsm-client/ValheimServerManager.Client.dll /tmp/vsm-client/Newtonsoft.Json.dll \
-  /tmp/vsm-runtime/ValheimServerManagerRuntimeUpdater.dll \
-  "$client_runtime/BepInEx/plugins/ValheimServerManager/"
-printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"Valheim Server Manager client runtime.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-$bepinex_pack_version\"]}" >"$client_runtime/manifest.json"
-printf '%s\n' '# Valheim Server Manager runtime' '' 'This client-targeted runtime is managed automatically by the installed Server Manager package.' >"$client_runtime/README.md"
-python3 /app/plugins/make_icon.py "$client_runtime/icon.png"
-rm -f /data/manager/runtime/ValheimServerManager-*-client.zip
-(cd "$client_runtime" && zip -qr "/data/manager/runtime/ValheimServerManager-$vsm_version-client.zip" .)
-rm -rf "$client_runtime" /tmp/vsm-client /tmp/vsm-bootstrap /tmp/vsm-runtime
+rm -rf /tmp/vsm-client /tmp/vsm-bootstrap /tmp/vsm-runtime
 
 chmod +x /data/server/valheim_server.x86_64 /data/server/start_server_bepinex.sh 2>/dev/null || true
 exec dotnet /app/ValheimServerManager.dll

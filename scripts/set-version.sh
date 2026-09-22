@@ -32,14 +32,8 @@ perl -0pi -e 's|(ValheimServerManager/)[0-9]+\.[0-9]+\.[0-9]+|$1$ENV{RELEASE_VER
 perl -0pi -e 's|(ValheimServerManager-)[0-9]+\.[0-9]+\.[0-9]+(\.zip)|$1$ENV{RELEASE_VERSION}$2|g' \
   src/ValheimServerManager/Program.cs
 
-perl -0pi -e 's/(Creaton-Server_Manager-)[0-9]+\.[0-9]+\.[0-9]+/$1$ENV{RELEASE_VERSION}/g; s/(ValheimServerManager-)[0-9]+\.[0-9]+\.[0-9]+(-client\.zip)/$1$ENV{RELEASE_VERSION}$2/g; s/(\"Server_Manager\",\s*\")[0-9]+\.[0-9]+\.[0-9]+(\")/$1$ENV{RELEASE_VERSION}$2/g' \
-  src/ValheimServerManager/Services/ClientModManifestService.cs
-
 perl -0pi -e 's/(Valheim Server Manager )[0-9]+\.[0-9]+\.[0-9]+/$1$ENV{RELEASE_VERSION}/g' \
   web/src/main.tsx
-
-perl -0pi -e 's/(ValheimServerManager-)[0-9]+\.[0-9]+\.[0-9]+(-client\.zip)/$1$ENV{RELEASE_VERSION}$2/g; s/(name = "Server_Manager", version_number = ")[0-9]+\.[0-9]+\.[0-9]+(")/$1$ENV{RELEASE_VERSION}$2/g; s/(Creaton-Server_Manager-)[0-9]+\.[0-9]+\.[0-9]+/$1$ENV{RELEASE_VERSION}/g' \
-  tests/ValheimServerManager.Tests/CoreTests.cs
 
 perl -0pi -e 's/(server agent )[0-9]+\.[0-9]+\.[0-9]+/$1$ENV{RELEASE_VERSION}/g' \
   README.md

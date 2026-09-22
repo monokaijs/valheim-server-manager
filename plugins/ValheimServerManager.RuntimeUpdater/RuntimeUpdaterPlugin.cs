@@ -18,7 +18,7 @@ namespace ValheimServerManager.RuntimeUpdater;
 public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager.runtime-updater";
-    public const string PluginName = "Valheim Server Manager Runtime Updater";
+    public const string PluginName = "Valheim Server Manager Mod Installer";
     public const string PluginVersion = "2.1.5";
     internal static RuntimeUpdaterPlugin? Instance { get; private set; }
 
@@ -30,8 +30,9 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
     private string? _lastManifest;
     private ClientModCatalog? _catalog;
     private HashSet<string> _choices = new(StringComparer.Ordinal);
+    private HashSet<string> _installedChoices = new(StringComparer.Ordinal);
     private bool _showOptions;
-    private bool _offerOptions;
+    private bool _installationCurrent;
     private Vector2 _optionsScroll;
     private string? _pendingReceipt;
     private string? _checkingReceipt;
@@ -51,7 +52,7 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
     {
         if (Application.isBatchMode)
         {
-            Logger.LogInfo("Client runtime updater disabled in the dedicated-server process.");
+            Logger.LogInfo("Client mod installer disabled in the dedicated-server process.");
             enabled = false;
             return;
         }
@@ -66,7 +67,7 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
         if (!NoticeInputGuard.Install(_harmony)) Logger.LogWarning("The game menu input guard is unavailable on this Valheim build.");
         try { new ManifestHandshake(Logger).Install(_harmony); }
         catch (Exception error) { Logger.LogError("Could not install the manifest handshake: " + error); }
-        Logger.LogInfo("Server Manager update receiver and client notices are ready.");
+        Logger.LogInfo("Server Manager manual mod installer and client notices are ready.");
     }
 
     private void Update()
@@ -94,7 +95,8 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
         _pendingManifest = _lastManifest = _progress = null;
         _catalog = null;
         _choices.Clear();
-        _showOptions = _offerOptions = false;
+        _installedChoices.Clear();
+        _showOptions = _installationCurrent = false;
         _verifiedReceipt = _checkingReceipt = _pendingReceipt = null;
         NoticeInputGuard.ExternalModal = false;
         _notices.ClearTransient();
@@ -111,23 +113,40 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
         }
         // Current and legacy relay names can deliver the same manifest in adjacent frames.
         if (string.Equals(_lastManifest, manifest, StringComparison.Ordinal)) return;
+        _pendingManifest = null;
+        _verifiedReceipt = null;
         try
         {
             _catalog = ClientModSelection.Parse(manifest);
+            var installed = new HashSet<string>(BootstrapSynchronizer.InstalledCoordinates(), StringComparer.OrdinalIgnoreCase);
+            _installedChoices = new HashSet<string>(_catalog.OptionalGroups
+                .Where(group => group.Packages.Any(package => installed.Contains(package.Coordinate)
+                    && (package.Namespace + "-" + package.PackageName).Equals(group.Id, StringComparison.OrdinalIgnoreCase)))
+                .Select(group => group.Id), StringComparer.Ordinal);
             _choices = ClientModSelection.Load(Paths.BepInExRootPath, _catalog);
-            _offerOptions = _catalog.OptionalGroups.Count > 0 && !File.Exists(ClientModSelection.PreferencesPath(Paths.BepInExRootPath, _catalog.ManifestId));
-            _pendingManifest = ClientModSelection.EffectiveManifest(_catalog, _choices);
-            _pendingReceipt = _catalog.RequiredReceipt ? _catalog.Revision : null;
+            _choices.UnionWith(_installedChoices);
+            var effective = ClientModSelection.EffectiveManifest(_catalog, _choices);
+            _installationCurrent = BootstrapSynchronizer.IsInstalled(effective);
+            var required = ClientModSelection.EffectiveManifest(_catalog, Array.Empty<string>());
+            if (_catalog.RequiredReceipt && BootstrapSynchronizer.HasInstalledPackages(required))
+            {
+                _verifiedReceipt = _catalog.Revision;
+                _nextReceipt = 0;
+            }
+            _showOptions = !_installationCurrent || (_catalog.OptionalGroups.Count > 0
+                && !File.Exists(ClientModSelection.PreferencesPath(Paths.BepInExRootPath, _catalog.ManifestId)));
             _lastManifest = manifest;
         }
         catch (Exception error)
         {
+            _catalog = null;
+            _showOptions = false;
             Logger.LogError("Client mod catalog was rejected: " + error);
             DisconnectClient();
             _notices.Show("Mod selection unavailable", "The server's mod catalog or your saved choices could not be read. Check the BepInEx log and reconnect after the problem is corrected.", NoticeKind.Error);
             return;
         }
-        Logger.LogInfo("Received the server mod manifest; checking managed mods.");
+        Logger.LogInfo("Received the server mod list; waiting for an explicit install choice.");
     }
 
     internal void ReceiveServerNotice(object rpc, string title, string message)
@@ -174,8 +193,9 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
             Logger.LogError("Managed mod synchronization failed: " + error);
             DisconnectClient();
             var network = error is HttpRequestException || error is OperationCanceledException || error is TimeoutException;
-            _notices.Show(network ? "Mod download interrupted" : "Server mods could not be prepared",
-                network
+            var installOnly = error is InvalidOperationException && error.Message.StartsWith("Install-only:", StringComparison.Ordinal);
+            _notices.Show(installOnly ? "Installed mods differ" : network ? "Mod download interrupted" : "Server mods could not be prepared",
+                installOnly ? error.Message : network
                     ? "A required mod could not be downloaded. Check your internet connection, then reconnect to try again. Completed downloads will be reused."
                     : "The required mods could not be verified or staged. Check free disk space and ask an administrator to check the server's mod list, then reconnect. More details are in the BepInEx log.",
                 NoticeKind.Error);
@@ -186,17 +206,17 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
         {
             _verifiedReceipt = _checkingReceipt;
             _nextReceipt = 0;
-            if (_offerOptions) { _showOptions = true; _offerOptions = false; }
+            _installationCurrent = true;
             return;
         }
         _showOptions = false;
         NoticeInputGuard.ExternalModal = false;
-        Logger.LogInfo("Server mods are staged for the next Valheim launch.");
+        Logger.LogInfo("Selected server mods are staged for the next Valheim launch.");
         try { WriteRestartMarker(result); }
         catch (Exception failure) { Logger.LogWarning("Could not write the restart reminder: " + failure.Message); }
         DisconnectClient();
-        _notices.Show("Restart to finish updating",
-            "The required server mods are ready.\n\n1. Quit Valheim.\n2. Start it again with your mod manager.\n3. Reconnect to this server.\n\nChoose Later to stay at the menu. You still need to restart before joining this server.",
+        _notices.Show("Restart to finish installing",
+            "Your selected server mods are ready.\n\n1. Quit Valheim.\n2. Start it again with your mod manager.\n3. Reconnect to this server.\n\nChoose Later to stay at the menu. You still need to restart before joining this server.",
             NoticeKind.RestartRequired);
     }
 
@@ -218,11 +238,11 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
 
     private void OnGUI()
     {
-        if (_catalog != null && _catalog.OptionalGroups.Count > 0)
+        if (_catalog != null)
         {
             if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.F8)
             { _showOptions = !_showOptions; Event.current.Use(); }
-            if (!_showOptions && GUI.Button(new Rect(16, 16, 245, 32), "Server optional mods (F8)")) _showOptions = true;
+            if (!_showOptions && GUI.Button(new Rect(16, 16, 245, 32), "Server mods (F8)")) _showOptions = true;
         }
         if (!_showOptions || _catalog == null) { _notices.Draw(); return; }
         var previousDepth = GUI.depth;
@@ -232,7 +252,7 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
             var width = Mathf.Min(660f, Screen.width - 32f);
             var height = Mathf.Min(620f, Screen.height - 48f);
             GUI.ModalWindow(0x56534E, new Rect((Screen.width - width) / 2f, (Screen.height - height) / 2f, width, height),
-                _ => DrawOptionalMods(width, height), "SERVER MANAGER · MOD SELECTION");
+                _ => DrawOptionalMods(width, height), "SERVER MANAGER · MOD INSTALLER");
         }
         finally { GUI.depth = previousDepth; }
     }
@@ -243,10 +263,12 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
         var text = new GUIStyle(GUI.skin.label) { wordWrap = true, richText = false, fontSize = 14 };
         var caption = new GUIStyle(text) { fontSize = 12 };
         var toggle = new GUIStyle(GUI.skin.toggle) { wordWrap = true, richText = false, fontSize = 14 };
-        GUI.Label(new Rect(22, 35, width - 44, 48), "Required mods cannot be disabled. Optional mods are off by default and your choices are saved for this server only.", text);
-        var requiredHeight = 30f + _catalog.Packages.Count * 22f;
-        var contentHeight = requiredHeight + 38f + _catalog.OptionalGroups.Count * 60f;
-        _optionsScroll = GUI.BeginScrollView(new Rect(18, 90, width - 36, height - 198), _optionsScroll, new Rect(0, 0, width - 58, contentHeight));
+        GUI.Label(new Rect(22, 35, width - 44, 58),
+            "Saved selection: " + (_installationCurrent ? "installed" : "installation needed")
+            + ". Required mods are locked; new optional mods start off. Installed optional mods stay selected. Nothing downloads until you choose Install selected.", text);
+        var contentHeight = 80f + _catalog.Packages.Count * 22f
+            + _catalog.OptionalGroups.Sum(group => 40f + group.Packages.Count * 20f);
+        _optionsScroll = GUI.BeginScrollView(new Rect(18, 100, width - 36, height - 246), _optionsScroll, new Rect(0, 0, width - 58, contentHeight));
         GUI.Label(new Rect(4, 0, width - 70, 25), "REQUIRED · " + _catalog.Packages.Count + " packages", text);
         var y = 28f;
         foreach (var package in _catalog.Packages)
@@ -261,23 +283,32 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
         GUI.enabled = _check == null && _pendingManifest == null;
         foreach (var group in _catalog.OptionalGroups)
         {
-            var chosen = GUI.Toggle(new Rect(10, y, width - 85, 28), _choices.Contains(group.Id), group.Name, toggle);
+            GUI.enabled = previousEnabled && !_installedChoices.Contains(group.Id) && _check == null && _pendingManifest == null;
+            var chosen = GUI.Toggle(new Rect(10, y, width - 85, 28), _choices.Contains(group.Id), group.Name + (_installedChoices.Contains(group.Id) ? " (installed)" : ""), toggle);
             if (chosen) _choices.Add(group.Id); else _choices.Remove(group.Id);
-            GUI.Label(new Rect(30, y + 29, width - 100, 24), group.Packages.Count + " pinned package(s), including dependencies", caption);
-            y += 60;
+            y += 28;
+            foreach (var package in group.Packages)
+            {
+                GUI.Label(new Rect(30, y, width - 100, 20), package.Namespace + "/" + package.PackageName + " · " + package.VersionNumber, caption);
+                y += 20;
+            }
+            y += 12;
         }
         GUI.enabled = previousEnabled;
         GUI.EndScrollView();
-        GUI.Label(new Rect(22, height - 99, width - 44, 30), "Changing the installed mod set requires restarting Valheim. Personal, unmanaged mods are not removed.", caption);
+        GUI.Label(new Rect(22, height - 139, width - 44, 80),
+            "Bootstrap installs run in your active modded profile, but may not appear in r2modman's Installed list. Restarting r2modman does not register them. Restart Valheim after installation.", caption);
         GUI.enabled = _check == null && _pendingManifest == null;
-        if (GUI.Button(new Rect(22, height - 56, 126, 34), "Required only")) { _choices.Clear(); ApplyOptionalChoices(); }
+        if (GUI.Button(new Rect(22, height - 56, 126, 34), "Required only")) { _choices.Clear(); _choices.UnionWith(_installedChoices); }
         if (GUI.Button(new Rect(width - 290, height - 56, 120, 34), "Cancel"))
         {
             try { _choices = ClientModSelection.Load(Paths.BepInExRootPath, _catalog); }
             catch (Exception error) { Logger.LogWarning("Could not reload optional choices: " + error.Message); }
+            _choices.UnionWith(_installedChoices);
             _showOptions = false;
         }
-        if (GUI.Button(new Rect(width - 158, height - 56, 136, 34), "Apply choices")) ApplyOptionalChoices();
+        GUI.enabled = GUI.enabled && (_catalog.Packages.Count > 0 || _choices.Count > 0);
+        if (GUI.Button(new Rect(width - 158, height - 56, 136, 34), "Install selected")) ApplyOptionalChoices();
         GUI.enabled = previousEnabled;
     }
 
@@ -291,7 +322,6 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
             _pendingManifest = effective;
             _pendingReceipt = _catalog.RequiredReceipt ? _catalog.Revision : null;
             _showOptions = false;
-            _offerOptions = false;
         }
         catch (Exception error)
         {

@@ -158,6 +158,7 @@ jobs:
           perl -0pi -e \
             's/(PluginVersion = ")[0-9]+\.[0-9]+\.[0-9]+(";)/$1$ENV{RELEASE_VERSION}$2/' \
             plugins/ValheimServerManager.Server/ServerPlugin.cs \
+            plugins/ValheimServerManager.Client/ClientPlugin.cs \
             plugins/ValheimServerManager.RuntimeUpdater/RuntimeUpdaterPlugin.cs
           perl -0pi -e \
             's|<Version>[0-9]+\.[0-9]+\.[0-9]+</Version>|<Version>$ENV{RELEASE_VERSION}</Version>|' \
@@ -169,6 +170,11 @@ jobs:
             --property:ValheimManaged="$GITHUB_WORKSPACE/.valheim/valheim_server_Data/Managed" \
             --property:BepInExRoot="$GITHUB_WORKSPACE/.bepinex/BepInExPack_Valheim/BepInEx" \
             --output .release/BepInEx/plugins/ServerManager
+          dotnet build plugins/ValheimServerManager.Client/ValheimServerManager.Client.csproj \
+            --configuration Release \
+            --property:ValheimManaged="$GITHUB_WORKSPACE/.valheim/valheim_server_Data/Managed" \
+            --property:BepInExRoot="$GITHUB_WORKSPACE/.bepinex/BepInExPack_Valheim/BepInEx" \
+            --output .release-client
           dotnet build plugins/ValheimServerManager.Bootstrap/ValheimServerManager.Bootstrap.csproj \
             --configuration Release --framework net472 --output .release-loader
           dotnet build plugins/ValheimServerManager.RuntimeUpdater/ValheimServerManager.RuntimeUpdater.csproj \
@@ -178,6 +184,7 @@ jobs:
             --output .release-updater
           cp .release-loader/ValheimServerManagerBootstrap.dll .release/BepInEx/patchers/
           cp .release-updater/ValheimServerManagerRuntimeUpdater.dll .release/BepInEx/plugins/ServerManager/
+          cp .release-client/ValheimServerManager.Client.dll .release/BepInEx/plugins/ServerManager/
           find .release -type f -name '*.pdb' -delete
           python3 plugins/make_icon.py thunderstore/icon.png
 

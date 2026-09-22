@@ -11,11 +11,8 @@ public sealed record ClientModPolicy(string Policy, string Effective, IReadOnlyL
 public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfiguration configuration)
 {
     private const string SettingPrefix = "client-mod-sync:";
-    private const string ServerCharactersEnabledSetting = "server-characters.enabled";
     private const string InstanceKey = SettingPrefix + "instance-id";
-    private const string RuntimeCoordinate = "Creaton-Server_Manager-2.1.5";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly string _dataPath = configuration["VSM_DATA_PATH"] ?? "/data/manager";
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public async Task<string> BuildJson(CancellationToken cancellationToken = default)
@@ -31,9 +28,8 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
             var requiredRoots = enabled.Where(mod => ReadPolicy(mod, settings) == "required").ToArray();
             var required = Closure(requiredRoots, mods);
             var optional = enabled.Where(mod => ReadPolicy(mod, settings) == "optional" && !required.Any(item => item.Id == mod.Id)).ToArray();
-            var characters = ReadBool(settings, ServerCharactersEnabledSetting, configuration.GetValue("VSM_SERVER_CHARACTERS_ENABLED", false));
             var inspection = ReadBool(settings, ServerCharacterSettingsService.InspectionRequiredKey, configuration.GetValue("VSM_REQUIRE_INVENTORY_INSPECTION", true));
-            if (!characters && !inspection && required.Count == 0 && optional.Length == 0) return "";
+            if (required.Count == 0 && optional.Length == 0) return "";
 
             if (!settings.TryGetValue(InstanceKey, out var instanceId) || !Guid.TryParse(instanceId, out _))
             {
@@ -43,10 +39,8 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
                 else stored.Value = instanceId;
                 await db.SaveChangesAsync(cancellationToken);
             }
-            // The protected runtime is always mandatory while client management is active.
-            // This also upgrades legacy receivers so they can offer optional packages and receipts.
-            var packages = new List<ClientManifestPackage> { await Runtime(cancellationToken) };
-            packages.AddRange(required.Select(Package));
+            // Server Manager itself is installed and updated by the external mod manager.
+            var packages = required.Select(Package).ToList();
             var groups = optional.Select(mod => new OptionalModGroup(
                 mod.Namespace + "-" + mod.Name, mod.Namespace + "/" + mod.Name,
                 Closure([mod], mods).Select(Package).ToArray())).ToArray();
@@ -58,7 +52,7 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
             {
                 schemaVersion = 1, manifestId, revision, generatedAt = DateTimeOffset.UtcNow,
                 packages, configs = Array.Empty<object>(), optionalGroups = groups, optionalRevision,
-                requiredReceipt = true, inventoryInspectionRequired = inspection
+                requiredReceipt = packages.Count > 0, inventoryInspectionRequired = inspection
             }, JsonOptions);
         }
         finally { _gate.Release(); }
@@ -142,18 +136,8 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
         $"https://thunderstore.io/package/download/{Uri.EscapeDataString(mod.Namespace)}/{Uri.EscapeDataString(mod.Name)}/{Uri.EscapeDataString(mod.Version)}/",
         null, JsonSerializer.Deserialize<string[]>(mod.DependenciesJson, JsonOptions) ?? [], mod.Sha256, null);
 
-    private async Task<ClientManifestPackage> Runtime(CancellationToken cancellationToken)
-    {
-        var path = Path.Combine(_dataPath, "runtime", "ValheimServerManager-2.1.5-client.zip");
-        if (!File.Exists(path)) throw new FileNotFoundException("The VSM client runtime artifact is missing.", path);
-        var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
-        if (bytes.Length > 4 * 1024 * 1024) throw new InvalidDataException("The VSM client runtime exceeds the inline package limit.");
-        return new(RuntimeCoordinate, "Creaton", "Server_Manager", "2.1.5", "", bytes.LongLength, [],
-            Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), Convert.ToBase64String(bytes));
-    }
-
     private static Task<Dictionary<string, string>> Settings(ManagerDbContext db, CancellationToken ct) => db.ManagerSettings.AsNoTracking()
-        .Where(setting => setting.Key.StartsWith(SettingPrefix) || setting.Key == ServerCharactersEnabledSetting || setting.Key == ServerCharacterSettingsService.InspectionRequiredKey)
+        .Where(setting => setting.Key.StartsWith(SettingPrefix) || setting.Key == ServerCharacterSettingsService.InspectionRequiredKey)
         .ToDictionaryAsync(setting => setting.Key, setting => setting.Value, ct);
     private static bool ReadBool(IReadOnlyDictionary<string, string> settings, string key, bool fallback) =>
         settings.TryGetValue(key, out var value) && bool.TryParse(value, out var flag) ? flag : fallback;

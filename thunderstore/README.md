@@ -1,6 +1,6 @@
 # Server Manager
 
-Server Manager is the single installable mod for the self-hosted Valheim Server Manager control plane. On dedicated servers it connects the game server to the web dashboard. On player clients it receives the exact client runtime and required mod set selected by that server.
+Server Manager is the single installable mod for the self-hosted Valheim Server Manager control plane. On dedicated servers it connects the game server to the web dashboard. On player clients its in-game F8 screen lists required and optional packages with their exact versions. Optional packages start unchecked, and nothing is downloaded until the player chooses **Install selected**.
 
 The BepInEx plugin ID is `dev.creaton.valheim-server-manager`. This package is published under the independent `Creaton` namespace.
 
@@ -9,6 +9,8 @@ The BepInEx plugin ID is `dev.creaton.valheim-server-manager`. This package is p
 Deploy the complete manager with Docker by following the [project documentation](https://github.com/monokaijs/valheim-server-manager). The minimal setup is `cp .env.example .env`, `docker compose pull`, then `docker compose up -d`; the container installs and configures the agent automatically.
 
 Install this same package on the dedicated server. Player installation is optional in the default vanilla-compatible mode. If the owner enables server-owned characters, install the same package on each player client; there is no separate companion or bootstrap mod.
+
+Packages installed by the in-game installer can load in an r2modman profile, but they are not registered in r2modman's Installed list. Restarting r2modman does not register them. Use r2modman's own install flow if you want it to manage those packages. The in-game installer refuses to replace or remove installed packages; use a fresh profile for a different mod set. Update Server Manager through your mod manager.
 
 ## Security
 

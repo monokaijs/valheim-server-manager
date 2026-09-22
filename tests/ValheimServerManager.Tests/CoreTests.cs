@@ -464,15 +464,7 @@ public sealed class CoreTests
     public async Task ClientManifest_EmbedsRuntimeAndRespectsRequiredToggle()
     {
         var root = Path.Combine(Path.GetTempPath(), "vsm-client-manifest-" + Guid.NewGuid().ToString("N"));
-        var runtime = Path.Combine(root, "runtime");
-        Directory.CreateDirectory(runtime);
-        var runtimePackage = Path.Combine(runtime, "ValheimServerManager-2.1.5-client.zip");
-        using (var archive = ZipFile.Open(runtimePackage, ZipArchiveMode.Create))
-        {
-            var manifest = archive.CreateEntry("manifest.json");
-            await using var output = manifest.Open();
-            await JsonSerializer.SerializeAsync(output, new { name = "Server_Manager", version_number = "2.1.5" });
-        }
+        Directory.CreateDirectory(root);
 
         var services = new ServiceCollection();
         services.AddDbContext<ManagerDbContext>(options => options.UseSqlite($"Data Source={Path.Combine(root, "manager.db")}"));
@@ -499,9 +491,9 @@ public sealed class CoreTests
         var service = provider.GetRequiredService<ClientModManifestService>();
         using var initial = JsonDocument.Parse(await service.BuildJson());
         var packages = initial.RootElement.GetProperty("packages");
-        Assert.Equal(2, packages.GetArrayLength());
-        Assert.Equal("Author-GameplayMod-1.2.3", packages[1].GetProperty("coordinate").GetString());
-        Assert.Equal(JsonValueKind.Null, packages[1].GetProperty("contentBase64").ValueKind);
+        Assert.Single(packages.EnumerateArray());
+        Assert.Equal("Author-GameplayMod-1.2.3", packages[0].GetProperty("coordinate").GetString());
+        Assert.Equal(JsonValueKind.Null, packages[0].GetProperty("contentBase64").ValueKind);
         Assert.Equal(64, initial.RootElement.GetProperty("revision").GetString()!.Length);
 
         Guid modId;
@@ -516,12 +508,7 @@ public sealed class CoreTests
             db.ManagerSettings.Add(new ManagerSetting { Key = "server-characters.enabled", Value = "true" });
             await db.SaveChangesAsync();
         }
-        using var serverOnly = JsonDocument.Parse(await service.BuildJson());
-        var serverCharacterPackages = serverOnly.RootElement.GetProperty("packages");
-        Assert.Single(serverCharacterPackages.EnumerateArray());
-        Assert.Equal("Creaton-Server_Manager-2.1.5", serverCharacterPackages[0].GetProperty("coordinate").GetString());
-        Assert.False(string.IsNullOrWhiteSpace(serverCharacterPackages[0].GetProperty("contentBase64").GetString()));
-        Assert.Equal(new FileInfo(runtimePackage).Length, serverCharacterPackages[0].GetProperty("fileSize").GetInt64());
+        Assert.Equal("", await service.BuildJson());
         Directory.Delete(root, true);
     }
 

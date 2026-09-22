@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -20,36 +19,77 @@ public static class BootstrapSynchronizer
     private const int MaximumManifestBytes = 8 * 1024 * 1024;
     private static readonly object SynchronizeLock = new();
 
-    /// <summary>Checks and applies the latest manifest.</summary>
+    /// <summary>Applies only a manifest that the player explicitly staged in game.</summary>
     public static SynchronizationResult Run()
     {
         lock (SynchronizeLock)
         {
             var context = CreateContext();
             ApplyPendingLocked(context);
-            return RunLocked(context);
+            return SynchronizationResult.Unchanged(LoadState(context.StatePath).Revision);
         }
     }
 
-    private static SynchronizationResult RunLocked(BootstrapContext context)
+    /// <summary>Checks the active installation without downloading or changing files.</summary>
+    public static bool IsInstalled(string manifestJson)
     {
-        ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-        var previous = LoadState(context.StatePath);
-        if (!context.Settings.HasManifestUrl)
+        if (manifestJson == null) throw new ArgumentNullException(nameof(manifestJson));
+        if (Encoding.UTF8.GetByteCount(manifestJson) > MaximumManifestBytes)
+            throw new InvalidDataException("Relayed manifest exceeds the 8 MiB limit");
+        lock (SynchronizeLock)
         {
-            BootstrapLog.Info("No ManifestUrl is configured; waiting for a server-relayed manifest");
-            return SynchronizationResult.Unchanged(previous.Revision);
+            var context = CreateContext();
+            var manifest = Json.Read<BootstrapManifest>(Encoding.UTF8.GetBytes(manifestJson));
+            var previous = LoadState(context.StatePath);
+            ValidateManifest(manifest, ManifestIdentity(manifest), previous);
+            return !File.Exists(context.PendingManifestPath)
+                && string.Equals(previous.ManifestId, ManifestIdentity(manifest), StringComparison.Ordinal)
+                && string.Equals(previous.Revision, manifest.Revision, StringComparison.Ordinal)
+                && !PackageSetsDiffer(previous.Packages, manifest.Packages.Select(package => package.Coordinate))
+                && LocalStateIsHealthy(context.BepInExRoot, previous);
         }
+    }
 
-        BootstrapLog.Info("Checking configured manifest for managed mod and config updates");
-        var conditionalRevision = LocalStateIsHealthy(context.BepInExRoot, previous) ? previous.Revision : "";
-        var manifestBytes = DownloadManifest(context.Settings, conditionalRevision);
-        if (manifestBytes == null)
+    /// <summary>Checks required packages without treating optional choices as mandatory.</summary>
+    public static bool HasInstalledPackages(string manifestJson)
+    {
+        if (manifestJson == null) throw new ArgumentNullException(nameof(manifestJson));
+        if (Encoding.UTF8.GetByteCount(manifestJson) > MaximumManifestBytes)
+            throw new InvalidDataException("Relayed manifest exceeds the 8 MiB limit");
+        lock (SynchronizeLock)
         {
-            BootstrapLog.Info($"Revision {ShortRevision(previous.Revision)} is already current");
-            return SynchronizationResult.Unchanged(previous.Revision);
+            var context = CreateContext();
+            var manifest = Json.Read<BootstrapManifest>(Encoding.UTF8.GetBytes(manifestJson));
+            var previous = LoadState(context.StatePath);
+            ValidateManifest(manifest, ManifestIdentity(manifest), previous);
+            if (!File.Exists(context.LastManifestPath)) return false;
+            Dictionary<string, ManifestPackage> installedPackages;
+            try
+            {
+                var installed = Json.ReadFile<BootstrapManifest>(context.LastManifestPath);
+                installedPackages = installed.Packages.ToDictionary(package => package.Coordinate, StringComparer.OrdinalIgnoreCase);
+            }
+            catch (Exception error) when (error is IOException || error is System.Runtime.Serialization.SerializationException || error is ArgumentException)
+            {
+                return false;
+            }
+            return string.Equals(previous.ManifestId, ManifestIdentity(manifest), StringComparison.Ordinal)
+                && manifest.Packages.All(package => installedPackages.TryGetValue(package.Coordinate, out var active)
+                    && string.Equals(active.Sha256, package.Sha256, StringComparison.OrdinalIgnoreCase))
+                && LocalStateIsHealthy(context.BepInExRoot, previous);
         }
-        return ApplyManifestLocked(context, previous, manifestBytes);
+    }
+
+    /// <summary>Returns package coordinates previously installed in the active profile.</summary>
+    public static IReadOnlyCollection<string> InstalledCoordinates()
+    {
+        lock (SynchronizeLock)
+        {
+            var context = CreateContext();
+            if (!File.Exists(context.LastManifestPath)) return Array.Empty<string>();
+            var installed = Json.ReadFile<BootstrapManifest>(context.LastManifestPath);
+            return installed.Packages.Select(package => package.Coordinate).ToArray();
+        }
     }
 
     /// <summary>Downloads and stages a manifest relayed by the connected game server.</summary>
@@ -72,33 +112,6 @@ public static class BootstrapSynchronizer
         }
     }
 
-    /// <summary>Checks the configured server manifest and stages package changes for restart.</summary>
-    public static SynchronizationResult StageConfiguredUpdate()
-    {
-        lock (SynchronizeLock)
-        {
-            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-            var context = CreateContext();
-            var previous = LoadState(context.StatePath);
-            if (!context.Settings.HasManifestUrl) return SynchronizationResult.Unchanged(previous.Revision);
-            var conditionalRevision = LocalStateIsHealthy(context.BepInExRoot, previous) ? previous.Revision : "";
-            var manifestBytes = DownloadManifest(context.Settings, conditionalRevision);
-            return manifestBytes == null
-                ? SynchronizationResult.Unchanged(previous.Revision)
-                : StageManifestLocked(context, previous, manifestBytes);
-        }
-    }
-
-    /// <summary>Returns the last validated manifest for relay to connecting clients.</summary>
-    public static string? ReadRelayManifest()
-    {
-        var context = CreateContext();
-        if (!context.Settings.HasManifestUrl || !File.Exists(context.LastManifestPath)) return null;
-        var info = new FileInfo(context.LastManifestPath);
-        if (info.Length > MaximumManifestBytes) throw new InvalidDataException("Manifest exceeds the 8 MiB relay limit");
-        return File.ReadAllText(context.LastManifestPath, Encoding.UTF8);
-    }
-
     private static SynchronizationResult ApplyManifestLocked(
         BootstrapContext context,
         BootstrapState previous,
@@ -107,6 +120,7 @@ public static class BootstrapSynchronizer
         var manifest = Json.Read<BootstrapManifest>(manifestBytes);
         var manifestId = ManifestIdentity(manifest);
         ValidateManifest(manifest, manifestId, previous);
+        EnsureInstallOnly(context, previous, manifest);
 
         if (string.Equals(previous.Revision, manifest.Revision, StringComparison.Ordinal)
             && LocalStateIsHealthy(context.BepInExRoot, previous))
@@ -158,6 +172,7 @@ public static class BootstrapSynchronizer
         var manifest = Json.Read<BootstrapManifest>(manifestBytes);
         var manifestId = ManifestIdentity(manifest);
         ValidateManifest(manifest, manifestId, previous);
+        EnsureInstallOnly(context, previous, manifest);
 
         if (string.Equals(previous.Revision, manifest.Revision, StringComparison.Ordinal)
             && string.Equals(previous.ManifestId, manifestId, StringComparison.Ordinal)
@@ -177,7 +192,7 @@ public static class BootstrapSynchronizer
         }
 
         var packagesChanged = PackageSetsDiffer(previous.Packages, manifest.Packages.Select(package => package.Coordinate));
-        // Even a same-version rebuild or config repair must not swap loaded plugin files.
+        // Newly selected packages activate only on the next process start.
         cancellationToken.ThrowIfCancellationRequested();
         var temporary = context.PendingManifestPath + ".new";
         try
@@ -198,6 +213,49 @@ public static class BootstrapSynchronizer
         var manifestBytes = File.ReadAllBytes(context.PendingManifestPath);
         ApplyManifestLocked(context, LoadState(context.StatePath), manifestBytes);
         File.Delete(context.PendingManifestPath);
+    }
+
+    private static void EnsureInstallOnly(BootstrapContext context, BootstrapState previous, BootstrapManifest requested)
+    {
+        if (string.IsNullOrWhiteSpace(previous.Revision))
+        {
+            if (File.Exists(context.LastManifestPath)
+                || Directory.Exists(Path.Combine(context.BepInExRoot, "plugins", "ValheimServerManagerManaged")))
+                throw new InvalidOperationException("Install-only: Existing managed files have no installation record. Use a fresh modded profile.");
+            return;
+        }
+        if (!LocalStateIsHealthy(context.BepInExRoot, previous))
+            throw new InvalidOperationException("Install-only: Existing managed files need repair. Use your mod manager or a fresh modded profile.");
+        if (!File.Exists(context.LastManifestPath))
+            throw new InvalidOperationException("Install-only: Existing package history is missing. Use a fresh modded profile to install this server's packages.");
+
+        BootstrapManifest installed;
+        try { installed = Json.ReadFile<BootstrapManifest>(context.LastManifestPath); }
+        catch (Exception error) when (error is IOException || error is System.Runtime.Serialization.SerializationException)
+        {
+            throw new InvalidOperationException("Install-only: Existing package history cannot be read. Use a fresh modded profile.", error);
+        }
+        if (PackageSetsDiffer(previous.Packages, installed.Packages.Select(package => package.Coordinate)))
+            throw new InvalidOperationException("Install-only: Existing package history does not match the active installation. Use a fresh modded profile.");
+
+        foreach (var current in installed.Packages)
+        {
+            var next = requested.Packages.FirstOrDefault(package =>
+                package.Namespace.Equals(current.Namespace, StringComparison.OrdinalIgnoreCase)
+                && package.PackageName.Equals(current.PackageName, StringComparison.OrdinalIgnoreCase));
+            if (next is null || !string.Equals(next.Coordinate, current.Coordinate, StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(current.Sha256)
+                || !string.Equals(next.Sha256, current.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Install-only: " + current.Namespace + "/" + current.PackageName
+                    + " is already installed and cannot be replaced or removed here. Use a fresh modded profile for another version or mod set.");
+        }
+
+        foreach (var current in installed.Configs)
+        {
+            var next = requested.Configs.FirstOrDefault(config => config.Path.Equals(current.Path, StringComparison.OrdinalIgnoreCase));
+            if (next is null || !string.Equals(next.Sha256, current.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Install-only: An installed configuration cannot be replaced or removed here. Use a fresh modded profile.");
+        }
     }
 
     private static void WriteLastManifest(string path, byte[] manifestBytes)
@@ -241,30 +299,6 @@ public static class BootstrapSynchronizer
             BootstrapLog.Error("Ignoring corrupt local bootstrap state", error);
             return new BootstrapState();
         }
-    }
-
-    private static byte[]? DownloadManifest(BootstrapSettings settings, string previousRevision)
-    {
-        using var client = CreateClient(settings.RequestTimeoutSeconds);
-        using var request = new HttpRequestMessage(HttpMethod.Get, settings.ManifestUrl);
-        if (!string.IsNullOrWhiteSpace(previousRevision))
-            request.Headers.TryAddWithoutValidation("If-None-Match", "\"" + previousRevision + "\"");
-        using var response = client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
-        if (response.StatusCode == HttpStatusCode.NotModified) return null;
-        response.EnsureSuccessStatusCode();
-        if (response.Content.Headers.ContentLength > MaximumManifestBytes)
-            throw new InvalidDataException("Manifest exceeds the 8 MiB limit");
-        using var source = response.Content.ReadAsStreamAsync().GetAwaiter().GetResult();
-        using var target = new MemoryStream();
-        var buffer = new byte[81920];
-        int read;
-        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
-        {
-            if (target.Length + read > MaximumManifestBytes)
-                throw new InvalidDataException("Manifest exceeds the 8 MiB limit");
-            target.Write(buffer, 0, read);
-        }
-        return target.ToArray();
     }
 
     private static string GetPackageArchive(BootstrapSettings settings, string stateRoot, ManifestPackage package,
@@ -388,12 +422,9 @@ public static class BootstrapSynchronizer
         if (Directory.Exists(managedPlugins)) Directory.Move(managedPlugins, backupPlugins);
 
         var configBackups = new Dictionary<string, byte[]?>(StringComparer.OrdinalIgnoreCase);
-        var infrastructureBackups = new Dictionary<string, byte[]?>(StringComparer.OrdinalIgnoreCase);
         try
         {
             Directory.Move(stagedPlugins, managedPlugins);
-            var infrastructureHashes = PromoteManagedInfrastructure(
-                bepinexRoot, managedPlugins, manifest, previous.InfrastructureHashes, infrastructureBackups);
             ApplyPackageDefaults(bepinexRoot, stagedDefaults);
             ApplyManagedConfigs(bepinexRoot, manifest.Configs, previous.ManagedConfigs, configBackups);
             Json.WriteFile(statePath, new BootstrapState
@@ -404,7 +435,7 @@ public static class BootstrapSynchronizer
                 Packages = manifest.Packages.Select(package => package.Coordinate).ToList(),
                 ManagedConfigs = manifest.Configs.Select(config => config.Path).ToList(),
                 ManagedConfigHashes = manifest.Configs.ToDictionary(config => config.Path, config => config.Sha256, StringComparer.OrdinalIgnoreCase),
-                InfrastructureHashes = infrastructureHashes,
+                InfrastructureHashes = new Dictionary<string, string>(),
             });
             TryDeleteDirectory(backupPlugins);
         }
@@ -413,71 +444,7 @@ public static class BootstrapSynchronizer
             TryDeleteDirectory(managedPlugins);
             if (Directory.Exists(backupPlugins)) Directory.Move(backupPlugins, managedPlugins);
             RestoreConfigs(bepinexRoot, configBackups);
-            RestoreInfrastructure(infrastructureBackups);
             throw;
-        }
-    }
-
-    private static Dictionary<string, string> PromoteManagedInfrastructure(
-        string bepinexRoot,
-        string managedPlugins,
-        BootstrapManifest manifest,
-        IReadOnlyDictionary<string, string>? previousHashes,
-        IDictionary<string, byte[]?> backups)
-    {
-        var hashes = previousHashes == null
-            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            : previousHashes.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
-        var hasRuntime = manifest.Packages.Any(package =>
-            package.Namespace.Equals("Creaton", StringComparison.OrdinalIgnoreCase)
-            && package.PackageName.Equals("Server_Manager", StringComparison.OrdinalIgnoreCase));
-        if (!hasRuntime) return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        const string relative = "plugins/ValheimServerManager/ValheimServerManagerRuntimeUpdater.dll";
-        var source = Path.Combine(managedPlugins, "Creaton-Server_Manager", "ValheimServerManager", "ValheimServerManagerRuntimeUpdater.dll");
-        if (!File.Exists(source)) return hashes; // Compatibility with manifests produced before updater self-management.
-        var destination = SafeInfrastructureTarget(bepinexRoot, relative);
-        backups[destination] = File.Exists(destination) ? File.ReadAllBytes(destination) : null;
-        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-        var temporary = destination + ".vsm-new";
-        try
-        {
-            File.Copy(source, temporary, true);
-            AtomicFile.Replace(temporary, destination);
-            File.Delete(source); // Prevent BepInEx from discovering a duplicate updater GUID in the managed tree.
-            using var stream = File.OpenRead(destination);
-            hashes[relative] = Hex(SHA256.Create().ComputeHash(stream));
-            BootstrapLog.Info("Promoted the server-provided runtime updater before plugin loading");
-            return hashes;
-        }
-        finally { if (File.Exists(temporary)) File.Delete(temporary); }
-    }
-
-    private static string SafeInfrastructureTarget(string bepinexRoot, string relative)
-    {
-        const string allowed = "plugins/ValheimServerManager/ValheimServerManagerRuntimeUpdater.dll";
-        if (!relative.Equals(allowed, StringComparison.Ordinal))
-            throw new InvalidDataException("Unsupported managed infrastructure path: " + relative);
-        var root = Path.GetFullPath(bepinexRoot);
-        var target = Path.GetFullPath(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
-        if (!target.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Managed infrastructure escaped the BepInEx root");
-        return target;
-    }
-
-    private static void RestoreInfrastructure(IDictionary<string, byte[]?> backups)
-    {
-        foreach (var pair in backups)
-        {
-            if (pair.Value == null)
-            {
-                if (File.Exists(pair.Key)) File.Delete(pair.Key);
-            }
-            else
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(pair.Key)!);
-                File.WriteAllBytes(pair.Key, pair.Value);
-            }
         }
     }
 
@@ -572,16 +539,6 @@ public static class BootstrapSynchronizer
             using var stream = File.OpenRead(target);
             if (!FixedTimeEquals(Hex(SHA256.Create().ComputeHash(stream)), pair.Value)) return false;
         }
-        if (state.InfrastructureHashes != null)
-        {
-            foreach (var pair in state.InfrastructureHashes)
-            {
-                var target = SafeInfrastructureTarget(bepinexRoot, pair.Key);
-                if (!File.Exists(target)) return false;
-                using var stream = File.OpenRead(target);
-                if (!FixedTimeEquals(Hex(SHA256.Create().ComputeHash(stream)), pair.Value)) return false;
-            }
-        }
         return true;
     }
 
@@ -617,8 +574,16 @@ public static class BootstrapSynchronizer
         if (manifest.Packages.Count > 500) throw new InvalidDataException("Bootstrap manifest contains too many packages");
         if (manifest.Configs.Count > 100) throw new InvalidDataException("Bootstrap manifest contains too many configs");
         var coordinates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var package in manifest.Packages)
+        {
+            if (package.Namespace.Equals("Creaton", StringComparison.OrdinalIgnoreCase)
+                && package.PackageName.Equals("Server_Manager", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Server Manager must be installed through the external mod manager");
             if (!coordinates.Add(package.Coordinate)) throw new InvalidDataException("Duplicate package " + package.Coordinate);
+            if (!identities.Add(package.Namespace + "/" + package.PackageName))
+                throw new InvalidDataException("Conflicting versions of " + package.Namespace + "/" + package.PackageName);
+        }
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var config in manifest.Configs)
             if (!paths.Add(config.Path)) throw new InvalidDataException("Duplicate config " + config.Path);

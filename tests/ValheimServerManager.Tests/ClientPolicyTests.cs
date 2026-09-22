@@ -36,10 +36,7 @@ public sealed class ClientPolicyTests
     public async Task OptionalCatalog_DoesNotChangeRequiredRevisionAndIncludesDependencyClosure()
     {
         var root = Path.Combine(Path.GetTempPath(), "vsm-mod-policy-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(root, "runtime"));
-        // Release validation runs after set-version.sh, so fixtures follow the built manager.
-        var runtimeVersion = typeof(ClientModManifestService).Assembly.GetName().Version!.ToString(3);
-        await File.WriteAllBytesAsync(Path.Combine(root, "runtime", $"ValheimServerManager-{runtimeVersion}-client.zip"), [1, 2, 3]);
+        Directory.CreateDirectory(root);
         try
         {
             await using var provider = InspectionAndFilesTests.Provider(root);
@@ -63,12 +60,7 @@ public sealed class ClientPolicyTests
             Assert.Equal("serverOnly", policies[dependency.Id].Policy);
             Assert.Contains("Author/Required", policies[dependency.Id].RequiredBy);
             using var first = JsonDocument.Parse(await service.BuildJson());
-            Assert.Equal(3, first.RootElement.GetProperty("packages").GetArrayLength()); // runtime + required + dependency
-            var runtime = first.RootElement.GetProperty("packages")[0];
-            Assert.Equal("Creaton", runtime.GetProperty("namespace").GetString());
-            Assert.Equal("Server_Manager", runtime.GetProperty("packageName").GetString());
-            Assert.Equal(runtimeVersion, runtime.GetProperty("versionNumber").GetString());
-            Assert.Equal($"Creaton-Server_Manager-{runtimeVersion}", runtime.GetProperty("coordinate").GetString());
+            Assert.Equal(2, first.RootElement.GetProperty("packages").GetArrayLength()); // required + dependency
             var group = Assert.Single(first.RootElement.GetProperty("optionalGroups").EnumerateArray());
             Assert.Equal(2, group.GetProperty("packages").GetArrayLength());
             var revision = first.RootElement.GetProperty("revision").GetString();

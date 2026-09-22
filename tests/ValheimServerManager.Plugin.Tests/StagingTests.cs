@@ -18,44 +18,36 @@ public sealed class StagingTests : IDisposable
     }
 
     [Fact]
-    public void SameVersionRebuildIsStagedWithoutReplacingLoadedPlugin()
+    public void SameVersionRebuildCannotReplaceInstalledPlugin()
     {
         var manifest = Manifest();
-        var previous = State(manifest);
-        previous.Revision = new string('b', 64);
+        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, new BootstrapState(), Json.Write(manifest)).Changed);
+        BootstrapSynchronizer.ApplyPendingLocked(_context);
+        var previous = Json.ReadFile<BootstrapState>(_context.StatePath);
         var live = Path.Combine(_root, "plugins", "ValheimServerManagerManaged", "Example-Mod", "Mod.dll");
-        Directory.CreateDirectory(Path.GetDirectoryName(live)!);
-        File.WriteAllText(live, "currently loaded DLL");
-        Json.WriteFile(_context.StatePath, previous);
-
-        var progress = new List<string>();
-        var result = BootstrapSynchronizer.StageManifestLocked(_context, previous, Json.Write(manifest), default, progress.Add);
-
-        Assert.True(result.Changed);
-        Assert.False(result.PackagesChanged);
-        Assert.Equal("currently loaded DLL", File.ReadAllText(live));
+        var original = File.ReadAllText(live);
+        manifest.Packages[0].Sha256 = new string('b', 64);
+        manifest.Revision = new string('b', 64);
+        Assert.Throws<InvalidOperationException>(() => BootstrapSynchronizer.StageManifestLocked(_context, previous, Json.Write(manifest)));
+        Assert.Equal(original, File.ReadAllText(live));
         Assert.Equal(previous.Revision, Json.ReadFile<BootstrapState>(_context.StatePath).Revision);
-        Assert.Equal(manifest.Revision, Json.ReadFile<BootstrapManifest>(_context.PendingManifestPath).Revision);
-        Assert.NotEmpty(progress);
+        Assert.False(File.Exists(_context.PendingManifestPath));
     }
 
     [Fact]
-    public void ConfigRepairIsStagedWithoutModifyingLiveConfig()
+    public void ConfigRepairCannotOverwriteLocalConfig()
     {
         var manifest = Manifest();
         var content = System.Text.Encoding.UTF8.GetBytes("new config");
         manifest.Configs.Add(new ManifestConfig { Path = "test.cfg", ContentBase64 = Convert.ToBase64String(content), Sha256 = Hash(content) });
-        var previous = State(manifest);
-        Directory.CreateDirectory(Path.Combine(_root, "plugins", "ValheimServerManagerManaged"));
-        Directory.CreateDirectory(Path.Combine(_root, "config"));
+        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, new BootstrapState(), Json.Write(manifest)).Changed);
+        BootstrapSynchronizer.ApplyPendingLocked(_context);
+        var previous = Json.ReadFile<BootstrapState>(_context.StatePath);
         var config = Path.Combine(_root, "config", "test.cfg");
         File.WriteAllText(config, "old config");
-        previous.ManagedConfigs.Add("test.cfg");
-        previous.ManagedConfigHashes.Add("test.cfg", Hash(content));
-
-        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, previous, Json.Write(manifest)).Changed);
+        Assert.Throws<InvalidOperationException>(() => BootstrapSynchronizer.StageManifestLocked(_context, previous, Json.Write(manifest)));
         Assert.Equal("old config", File.ReadAllText(config));
-        Assert.True(File.Exists(_context.PendingManifestPath));
+        Assert.False(File.Exists(_context.PendingManifestPath));
     }
 
     [Fact]
@@ -73,9 +65,10 @@ public sealed class StagingTests : IDisposable
     public void ReturningToInstalledServerClearsSupersededPendingManifest()
     {
         var manifest = Manifest();
-        Directory.CreateDirectory(Path.Combine(_root, "plugins", "ValheimServerManagerManaged"));
+        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, new BootstrapState(), Json.Write(manifest)).Changed);
+        BootstrapSynchronizer.ApplyPendingLocked(_context);
         File.WriteAllText(_context.PendingManifestPath, "old server update");
-        Assert.False(BootstrapSynchronizer.StageManifestLocked(_context, State(manifest), Json.Write(manifest)).Changed);
+        Assert.False(BootstrapSynchronizer.StageManifestLocked(_context, Json.ReadFile<BootstrapState>(_context.StatePath), Json.Write(manifest)).Changed);
         Assert.False(File.Exists(_context.PendingManifestPath));
     }
 
@@ -89,43 +82,47 @@ public sealed class StagingTests : IDisposable
     }
 
     [Fact]
-    public void ServerManagerRuntimeUpdatesItsUpdaterBeforePluginLoading()
+    public void ServerManagerCannotBeInstalledByItsOwnBootstrap()
     {
         var manifest = RuntimeManifest();
-        var stableUpdater = Path.Combine(_root, "plugins", "ValheimServerManager", "ValheimServerManagerRuntimeUpdater.dll");
-        Directory.CreateDirectory(Path.GetDirectoryName(stableUpdater)!);
-        File.WriteAllText(stableUpdater, "old updater");
-
-        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, new BootstrapState(), Json.Write(manifest)).Changed);
-        BootstrapSynchronizer.ApplyPendingLocked(_context);
-
-        Assert.Equal("new updater", File.ReadAllText(stableUpdater));
-        Assert.True(File.Exists(Path.Combine(_root, "plugins", "ValheimServerManagerManaged", "Creaton-Server_Manager", "ValheimServerManager", "ValheimServerManager.Client.dll")));
-        Assert.False(File.Exists(Path.Combine(_root, "plugins", "ValheimServerManagerManaged", "Creaton-Server_Manager", "ValheimServerManager", "ValheimServerManagerRuntimeUpdater.dll")));
-        var state = Json.ReadFile<BootstrapState>(_context.StatePath);
-        Assert.Contains("plugins/ValheimServerManager/ValheimServerManagerRuntimeUpdater.dll", state.InfrastructureHashes.Keys);
-
-        File.WriteAllText(stableUpdater, "tampered updater");
-        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, state, Json.Write(manifest)).Changed);
+        Assert.Throws<InvalidDataException>(() => BootstrapSynchronizer.StageManifestLocked(_context, new BootstrapState(), Json.Write(manifest)));
+        Assert.False(File.Exists(_context.PendingManifestPath));
     }
 
     [Fact]
-    public void GameplayOnlyManifestStopsTrackingServerProvidedRuntimeUpdater()
+    public void InstalledPackageCannotBeRemovedByLaterManifest()
     {
-        var runtime = RuntimeManifest();
-        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, new BootstrapState(), Json.Write(runtime)).Changed);
+        var installed = Manifest();
+        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, new BootstrapState(), Json.Write(installed)).Changed);
         BootstrapSynchronizer.ApplyPendingLocked(_context);
-        var withRuntime = Json.ReadFile<BootstrapState>(_context.StatePath);
-        Assert.NotEmpty(withRuntime.InfrastructureHashes);
+        var empty = Manifest();
+        empty.Packages.Clear();
+        empty.Revision = new string('d', 64);
+        Assert.Throws<InvalidOperationException>(() => BootstrapSynchronizer.StageManifestLocked(
+            _context, Json.ReadFile<BootstrapState>(_context.StatePath), Json.Write(empty)));
+    }
 
-        var gameplayOnly = Manifest();
-        gameplayOnly.Revision = new string('d', 64);
-        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, withRuntime, Json.Write(gameplayOnly)).Changed);
+    [Fact]
+    public void NewPackageCanBeAddedWithoutChangingInstalledPackage()
+    {
+        var first = Manifest();
+        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, new BootstrapState(), Json.Write(first)).Changed);
+        BootstrapSynchronizer.ApplyPendingLocked(_context);
+        var original = Path.Combine(_root, "plugins", "ValheimServerManagerManaged", "Example-Mod", "Mod.dll");
+        var originalBytes = File.ReadAllBytes(original);
+
+        var next = Manifest();
+        var extra = Manifest().Packages[0];
+        extra.Namespace = "More";
+        extra.Coordinate = "More-Mod-1.0.0";
+        next.Packages.Add(extra);
+        next.Revision = new string('e', 64);
+        Assert.True(BootstrapSynchronizer.StageManifestLocked(
+            _context, Json.ReadFile<BootstrapState>(_context.StatePath), Json.Write(next)).Changed);
         BootstrapSynchronizer.ApplyPendingLocked(_context);
 
-        var state = Json.ReadFile<BootstrapState>(_context.StatePath);
-        Assert.Empty(state.InfrastructureHashes);
-        Assert.False(BootstrapSynchronizer.StageManifestLocked(_context, state, Json.Write(gameplayOnly)).Changed);
+        Assert.Equal(originalBytes, File.ReadAllBytes(original));
+        Assert.True(File.Exists(Path.Combine(_root, "plugins", "ValheimServerManagerManaged", "More-Mod", "Mod.dll")));
     }
 
     [Theory]
