@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.WebSockets;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -90,6 +91,11 @@ public sealed class ServerPlugin : BaseUnityPlugin
         Patch(typeof(PlayerLimitPeerInfoPatch)); Patch(typeof(PlayerLimitCountPatch));
         Patch(typeof(PlayFabLobbyLimitPatch)); Patch(typeof(PlayFabNetworkLimitPatch));
         Patch(typeof(SteamServerLimitPatch)); Patch(typeof(SteamLobbyLimitPatch));
+        if (PublicIpPatch.TryConfigure(Environment.GetEnvironmentVariable("VSM_PUBLIC_IP"), out var publicIp))
+        {
+            Patch(typeof(PublicIpPatch));
+            Logger.LogInfo($"Using the container-resolved public IP {publicIp} instead of Valheim's broken repeated lookup path.");
+        }
         Task.Run(() => ConnectionLoop(_lifetime.Token));
         Logger.LogInfo($"Server player limit set to {MaxPlayers}." + (MaxPlayers > 10 ? " Values above 10 are a modded, unsupported Valheim configuration." : ""));
         Logger.LogInfo("Server agent loaded; waiting for dedicated-server networking.");
@@ -897,6 +903,30 @@ public sealed class ServerPlugin : BaseUnityPlugin
             if (!PlayerLimitPeerInfoPatch.IsChecking || ZNet.instance == null || !ZNet.instance.IsServer()) return;
             if (__result >= MaxPlayers) __result = 10;
             else if (__result >= 10) __result = 9;
+        }
+    }
+
+    // Valheim l-1.0.15 starts a request and then attempts to change the shared
+    // HttpClient.Timeout on every later GetPublicIP call. Mono rejects that
+    // mutation and PlayFab can enter a tight retry/log loop. The container
+    // resolves the public address once, and this prefix returns that value.
+    [HarmonyPatch(typeof(ZNet), "GetPublicIP", typeof(int))]
+    private static class PublicIpPatch
+    {
+        private static string _publicIp;
+
+        internal static bool TryConfigure(string value, out string publicIp)
+        {
+            publicIp = (value ?? "").Trim();
+            if (!IPAddress.TryParse(publicIp, out _)) return false;
+            _publicIp = publicIp;
+            return true;
+        }
+
+        private static bool Prefix(ref string __result)
+        {
+            __result = _publicIp;
+            return false;
         }
     }
 

@@ -14,6 +14,25 @@ if [[ -z "${VSM_AGENT_TOKEN:-}" ]]; then
   export VSM_AGENT_TOKEN
 fi
 
+# Valheim's current dedicated-server build mutates a shared HttpClient timeout
+# after its first public-IP request. Resolve the address once per container so
+# the server plugin can bypass that broken retry path.
+if [[ -z "${VSM_PUBLIC_IP:-}" ]]; then
+  for public_ip_url in \
+    https://api.ipify.org \
+    https://ipv4.icanhazip.com \
+    https://checkip.amazonaws.com; do
+    if public_ip_candidate="$(curl -4fsS --max-time 5 "$public_ip_url" 2>/dev/null)"; then
+      public_ip_candidate="${public_ip_candidate//$'\r'/}"
+      public_ip_candidate="${public_ip_candidate//$'\n'/}"
+      if [[ -n "$public_ip_candidate" ]]; then
+        export VSM_PUBLIC_IP="$public_ip_candidate"
+        break
+      fi
+    fi
+  done
+fi
+
 if [[ ! -x /opt/steamcmd/steamcmd.sh ]]; then
   curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz | tar -xz -C /opt/steamcmd
 fi
