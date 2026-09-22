@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
-    <Version>2.1.0</Version>
-    <InformationalVersion>2.1.0</InformationalVersion>
+    <Version>2.1.1</Version>
+    <InformationalVersion>2.1.1</InformationalVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>

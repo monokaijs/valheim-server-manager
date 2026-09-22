@@ -17,7 +17,7 @@ public sealed class RuntimeUpdaterPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager.runtime-updater";
     public const string PluginName = "Valheim Server Manager Runtime Updater";
-    public const string PluginVersion = "2.1.0";
+    public const string PluginVersion = "2.1.1";
     internal static RuntimeUpdaterPlugin? Instance { get; private set; }
 
     private readonly NoticeOverlay _notices = new();
