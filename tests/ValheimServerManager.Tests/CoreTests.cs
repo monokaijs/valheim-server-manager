@@ -356,12 +356,12 @@ public sealed class CoreTests
         var root = Path.Combine(Path.GetTempPath(), "vsm-client-manifest-" + Guid.NewGuid().ToString("N"));
         var runtime = Path.Combine(root, "runtime");
         Directory.CreateDirectory(runtime);
-        var runtimePackage = Path.Combine(runtime, "ValheimServerManager-1.6.6-client.zip");
+        var runtimePackage = Path.Combine(runtime, "ValheimServerManager-2.0.0-client.zip");
         using (var archive = ZipFile.Open(runtimePackage, ZipArchiveMode.Create))
         {
             var manifest = archive.CreateEntry("manifest.json");
             await using var output = manifest.Open();
-            await JsonSerializer.SerializeAsync(output, new { name = "Server_Manager", version_number = "1.6.6" });
+            await JsonSerializer.SerializeAsync(output, new { name = "Server_Manager", version_number = "2.0.0" });
         }
 
         var services = new ServiceCollection();
@@ -391,7 +391,7 @@ public sealed class CoreTests
         Assert.Equal(2, packages.GetArrayLength());
         Assert.False(string.IsNullOrWhiteSpace(packages[0].GetProperty("contentBase64").GetString()));
         Assert.Equal("", packages[0].GetProperty("downloadUrl").GetString());
-        Assert.Equal("Creaton-Server_Manager-1.6.6", packages[0].GetProperty("coordinate").GetString());
+        Assert.Equal("Creaton-Server_Manager-2.0.0", packages[0].GetProperty("coordinate").GetString());
         Assert.Equal(new FileInfo(runtimePackage).Length, packages[0].GetProperty("fileSize").GetInt64());
         Assert.Equal(64, packages[0].GetProperty("sha256").GetString()!.Length);
         Assert.Equal(64, initial.RootElement.GetProperty("revision").GetString()!.Length);
