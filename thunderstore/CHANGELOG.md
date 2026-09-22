@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.2.3
 
 - Required the Server Manager client runtime and inventory sharing for every server player. New client installs enable sharing by default; existing disabled settings still refuse sharing and are rejected after the grace period.
 - Removed the in-game F8 mod screen and its on-screen button. Missing required mods and unlisted installed mods now disconnect the bundled client with a persistent notice. Listed optional mods may be omitted, but installed versions must match. The server holds world data until it receives a valid allowlist acknowledgment.

@@ -27,7 +27,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager";
     public const string PluginName = "Server Manager";
-    public const string PluginVersion = "2.2.2";
+    public const string PluginVersion = "2.2.3";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.server";
     private const string ClientManifestRpc = "ValheimServerManager_Manifest_v1";
     private readonly ConcurrentQueue<Action> _mainThread = new();
