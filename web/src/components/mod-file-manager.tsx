@@ -37,6 +37,12 @@ export function ModFiles({ modId, onChanged }: { modId: string; onChanged?: () =
     catch (cause) { setError((cause as Error).message) }
   }, [url])
   useEffect(() => { void load(); return () => { version.current++ } }, [load])
+  useEffect(() => {
+    if (!dirty) return
+    const protect = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = "" }
+    window.addEventListener("beforeunload", protect)
+    return () => window.removeEventListener("beforeunload", protect)
+  }, [dirty])
   const read = async (entry: Entry) => {
     const serial = ++version.current
     setLoading(true); setError("")
@@ -54,7 +60,7 @@ export function ModFiles({ modId, onChanged }: { modId: string; onChanged?: () =
     if (revealed) void read(entry)
   }
   const begin = (kind: Operation) => {
-    if (dirty && kind !== "create" && kind !== "mkdir" && !window.confirm("Discard the unsaved draft?")) return
+    if (dirty && !window.confirm("Discard the unsaved draft?")) return
     const selectedFolder = selected?.kind === "directory" ? selected.path : selected ? parent(selected.path) : ""
     const folder = tree?.roots.some(root => selectedFolder === root || selectedFolder.startsWith(root + "/")) ? selectedFolder : tree?.roots[0] || ""
     setDestination(kind === "rename" ? selected?.path || "" : folder ? `${folder}/` : "")
