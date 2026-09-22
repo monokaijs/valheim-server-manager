@@ -103,6 +103,8 @@ jobs:
   publish-thunderstore:
     name: Publish matching Thunderstore package
     needs: release
+    permissions:
+      contents: write
     uses: ./.github/workflows/publish-thunderstore.yml
     with:
       version: ${{ needs.release.outputs.release_version }}
