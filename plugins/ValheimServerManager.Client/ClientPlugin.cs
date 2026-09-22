@@ -32,8 +32,6 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private readonly Dictionary<int, string> _iconCache = new();
     private ClientModCatalogStatus _modCatalog;
     private string _lastModCatalog;
-    private bool _showModStatus;
-    private Vector2 _modScroll;
     private float _nextModReceipt;
     private bool _bootstrapPending;
     private bool _pendingFirstProfile;
@@ -87,7 +85,6 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void Update()
     {
-        NoticeInputGuard.ExternalModal = _showModStatus;
         _notices.Tick(Player.m_localPlayer != null);
         if (ZNet.instance == null || ZNet.instance.IsServer())
         {
@@ -108,7 +105,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
             InvokeServer("VSM_ClientHello", _allowInventory.Value, _enableServerCharacters.Value ? PluginVersion : "");
             Logger.LogDebug("Sent VSM capability handshake to the server.");
         }
-        if (_serverRpc != null && _modCatalog?.RequiredReceipt == true && _modCatalog.RequiredPresent
+        if (_serverRpc != null && _modCatalog?.RequiredReceipt == true && _modCatalog.CanAcknowledge
             && Time.unscaledTime >= _nextModReceipt)
         {
             _nextModReceipt = Time.unscaledTime + 2f;
@@ -230,79 +227,33 @@ public sealed class ClientPlugin : BaseUnityPlugin
             _modCatalog = ClientModCompatibility.Check(json, Paths.BepInExRootPath);
             _lastModCatalog = json;
             _nextModReceipt = 0;
-            _showModStatus = !_modCatalog.RequiredPresent;
             Logger.LogInfo("Checked server mods against the active BepInEx profile.");
+            if (_modCatalog.RequiredReceipt && !_modCatalog.CanAcknowledge)
+            {
+                var missing = _modCatalog.Required.Where(package => !package.Present)
+                    .Select(package => package.Namespace + "-" + package.Name + "-" + package.Version
+                        + (package.InstalledVersion == null ? " (missing)" : " (found " + package.InstalledVersion + ")")).ToArray();
+                var details = new List<string>();
+                if (missing.Length > 0) details.Add("Required versions:\n" + string.Join("\n", missing));
+                if (_modCatalog.Unexpected.Count > 0) details.Add("Unapproved packages:\n" + string.Join("\n", _modCatalog.Unexpected));
+                QueueAdminNotice("Mod list does not match",
+                    string.Join("\n\n", details)
+                    + "\n\nChange this profile in your external mod manager, restart Valheim, then reconnect.");
+                _serverRpc?.GetSocket()?.Close();
+            }
         }
         catch (Exception error)
         {
             _modCatalog = null;
-            _showModStatus = false;
             Logger.LogWarning("Could not check the server mod list: " + error.Message);
             QueueAdminNotice("Mod list unavailable", "The server's mod list could not be checked. Review your BepInEx log and reconnect.");
+            _serverRpc?.GetSocket()?.Close();
         }
     }
 
     private void OnGUI()
     {
-        if (_modCatalog != null)
-        {
-            if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.F8)
-            { _showModStatus = !_showModStatus; Event.current.Use(); }
-            if (!_showModStatus && GUI.Button(new Rect(16, 16, 245, 32), "Server mods (F8)")) _showModStatus = true;
-        }
-        if (_showModStatus && _modCatalog != null)
-        {
-            var width = Mathf.Min(660f, Screen.width - 32f);
-            var height = Mathf.Min(600f, Screen.height - 48f);
-            GUI.ModalWindow(0x56534E, new Rect((Screen.width - width) / 2f, (Screen.height - height) / 2f, width, height),
-                _ => DrawModStatus(width, height), "SERVER MANAGER · MOD COMPATIBILITY");
-        }
         _notices.Draw();
-    }
-
-    private void DrawModStatus(float width, float height)
-    {
-        var text = new GUIStyle(GUI.skin.label) { wordWrap = true, fontSize = 14 };
-        var caption = new GUIStyle(text) { fontSize = 12 };
-        GUI.Label(new Rect(22, 35, width - 44, 50),
-            _modCatalog.RequiredPresent ? "Required packages match this profile." : "Required packages are missing or have different versions.", text);
-        var contentHeight = 90f + _modCatalog.Required.Count * 23f
-            + _modCatalog.Optional.Sum(group => 35f + group.Packages.Count * 22f);
-        _modScroll = GUI.BeginScrollView(new Rect(18, 92, width - 36, height - 205), _modScroll,
-            new Rect(0, 0, width - 58, contentHeight));
-        GUI.Label(new Rect(4, 0, width - 70, 25), "REQUIRED · " + _modCatalog.Required.Count + " packages", text);
-        var y = 28f;
-        foreach (var package in _modCatalog.Required)
-        {
-            GUI.Label(new Rect(12, y, width - 85, 22), PackageStatus(package), caption);
-            y += 23f;
-        }
-        y += 12f;
-        GUI.Label(new Rect(4, y, width - 70, 25), "OPTIONAL · " + _modCatalog.Optional.Count + " groups", text);
-        y += 30f;
-        foreach (var group in _modCatalog.Optional)
-        {
-            GUI.Label(new Rect(12, y, width - 85, 24), group.Name, text);
-            y += 26f;
-            foreach (var package in group.Packages)
-            {
-                GUI.Label(new Rect(30, y, width - 100, 21), PackageStatus(package), caption);
-                y += 22f;
-            }
-            y += 9f;
-        }
-        GUI.EndScrollView();
-        GUI.Label(new Rect(22, height - 105, width - 44, 52),
-            "This screen only checks the active profile. Manage package versions in your external mod manager, then restart Valheim.", caption);
-        if (GUI.Button(new Rect(width - 148, height - 50, 126, 32), "Close")) _showModStatus = false;
-    }
-
-    private static string PackageStatus(ClientModPackage package)
-    {
-        var identity = package.Namespace + "/" + package.Name + " · " + package.Version;
-        if (package.Present) return "[present] " + identity;
-        return package.InstalledVersion == null ? "[missing] " + identity
-            : "[found " + package.InstalledVersion + "] " + identity;
     }
 
     private void ApplyServerProfile()
@@ -414,8 +365,6 @@ public sealed class ClientPlugin : BaseUnityPlugin
         _notices.ClearTransient();
         _modCatalog = null;
         _lastModCatalog = null;
-        _showModStatus = false;
-        NoticeInputGuard.ExternalModal = false;
     }
 
     private void AttachServerPeer(ZNetPeer peer)
@@ -449,7 +398,6 @@ public sealed class ClientPlugin : BaseUnityPlugin
             __0.m_rpc.Register("VSM_CharacterCheckpoint", rpc => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnCharacterCheckpoint(__0.m_uid); });
             __0.m_rpc.Register<string, string>("VSM_AdminNotice", (rpc, title, message) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.QueueAdminNotice(title, message); });
             __0.m_rpc.Register<string>("ValheimServerManager_Manifest_v1", (rpc, json) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.ReceiveModCatalog(json); });
-            __0.m_rpc.Register<string>("ServerModBootstrap_Manifest_v1", (rpc, json) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.ReceiveModCatalog(json); });
         }
     }
 

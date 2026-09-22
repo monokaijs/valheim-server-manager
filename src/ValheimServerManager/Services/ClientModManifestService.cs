@@ -29,7 +29,6 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
             var required = Closure(requiredRoots, mods);
             var optional = enabled.Where(mod => ReadPolicy(mod, settings) == "optional" && !required.Any(item => item.Id == mod.Id)).ToArray();
             var inspection = ReadBool(settings, ServerCharacterSettingsService.InspectionRequiredKey, configuration.GetValue("VSM_REQUIRE_INVENTORY_INSPECTION", true));
-            if (required.Count == 0 && optional.Length == 0) return "";
 
             if (!settings.TryGetValue(InstanceKey, out var instanceId) || !Guid.TryParse(instanceId, out _))
             {
@@ -45,14 +44,14 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
                 mod.Namespace + "-" + mod.Name, mod.Namespace + "/" + mod.Name,
                 Closure([mod], mods).Select(Package).ToArray())).ToArray();
             var manifestId = "vsm:" + instanceId;
-            // Optional catalog changes do not invalidate a player's mandatory-mod receipt.
-            var revision = Hash(manifestId + "\n" + string.Join("\n", packages.Select(package => package.Coordinate)));
             var optionalRevision = Hash(string.Join("\n", groups.Select(group => group.Id + ":" + string.Join(",", group.Packages.Select(package => package.Coordinate)))));
+            // The admission receipt covers the entire allowlist, including optional package versions.
+            var revision = Hash(manifestId + "\n" + string.Join("\n", packages.Select(package => package.Coordinate)) + "\n" + optionalRevision);
             return JsonSerializer.Serialize(new
             {
-                schemaVersion = 1, manifestId, revision, generatedAt = DateTimeOffset.UtcNow,
+                schemaVersion = 2, manifestId, revision, generatedAt = DateTimeOffset.UtcNow,
                 packages, optionalGroups = groups, optionalRevision,
-                requiredReceipt = packages.Count > 0, inventoryInspectionRequired = inspection
+                requiredReceipt = true, inventoryInspectionRequired = inspection
             }, JsonOptions);
         }
         finally { _gate.Release(); }

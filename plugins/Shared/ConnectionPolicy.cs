@@ -4,8 +4,8 @@ internal static class ConnectionPolicy
 {
     internal const int VanillaPlayerLimit = 10;
 
-    // Optional features must not intercept Valheim's connection path unless
-    // the administrator explicitly enabled behavior that requires it.
-    internal static bool ShouldBufferWorldTraffic(bool serverCharactersEnabled) => serverCharactersEnabled;
+    // Hold world data while either admission requirement completes its handshake.
+    internal static bool ShouldBufferWorldTraffic(bool serverCharactersEnabled, bool requiredModsEnabled) =>
+        serverCharactersEnabled || requiredModsEnabled;
     internal static bool ShouldOverridePlayerLimit(int maximumPlayers) => maximumPlayers != VanillaPlayerLimit;
 }

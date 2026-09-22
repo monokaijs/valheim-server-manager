@@ -78,7 +78,7 @@ mkdir -p "$package/BepInEx/plugins/ValheimServerManager"
 cp /tmp/vsm-client/ValheimServerManager.Client.dll "$package/BepInEx/plugins/ValheimServerManager/"
 cp /tmp/vsm-client/Newtonsoft.Json.dll "$package/BepInEx/plugins/ValheimServerManager/"
 printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"Read-only client mod compatibility and server-owned characters.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-$bepinex_pack_version\"]}" >"$package/manifest.json"
-printf '%s\n' '# Valheim Server Manager client' '' 'The Docker deployment installs the server agent. Install this client package through your external mod manager. The in-game F8 screen only checks whether this profile has the package versions required by the server; it never downloads or installs mods.' >"$package/README.md"
+printf '%s\n' '# Valheim Server Manager client' '' 'The Docker deployment installs the server agent. Install this client package through your external mod manager. The client checks this profile against the server mod allowlist and disconnects with a notice if required packages are missing or unlisted packages are present; it never downloads or installs mods.' >"$package/README.md"
 python3 /app/plugins/make_icon.py "$package/icon.png"
 rm -f /data/manager/downloads/ValheimServerManagerClient-*.zip /data/manager/downloads/ValheimServerManagerServer-*.zip /data/manager/downloads/XomNghien-ServerModBootstrap-*.zip
 (cd "$package" && zip -qr "/data/manager/downloads/ValheimServerManager-$vsm_version.zip" .)

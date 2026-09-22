@@ -9,8 +9,9 @@ public sealed class ClientExperienceTests
     [Fact]
     public void OptionalConnectionHooksAreDisabledForVanillaDefaults()
     {
-        Assert.False(ConnectionPolicy.ShouldBufferWorldTraffic(false));
-        Assert.True(ConnectionPolicy.ShouldBufferWorldTraffic(true));
+        Assert.False(ConnectionPolicy.ShouldBufferWorldTraffic(false, false));
+        Assert.True(ConnectionPolicy.ShouldBufferWorldTraffic(true, false));
+        Assert.True(ConnectionPolicy.ShouldBufferWorldTraffic(false, true));
         Assert.False(ConnectionPolicy.ShouldOverridePlayerLimit(ConnectionPolicy.VanillaPlayerLimit));
         Assert.True(ConnectionPolicy.ShouldOverridePlayerLimit(20));
     }

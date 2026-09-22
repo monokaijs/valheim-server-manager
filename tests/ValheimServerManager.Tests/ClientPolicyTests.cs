@@ -33,7 +33,7 @@ public sealed class ClientPolicyTests
     }
 
     [Fact]
-    public async Task OptionalCatalog_DoesNotChangeRequiredRevisionAndIncludesDependencyClosure()
+    public async Task OptionalCatalog_ChangesAllowlistRevisionAndIncludesDependencyClosure()
     {
         var root = Path.Combine(Path.GetTempPath(), "vsm-mod-policy-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -73,7 +73,7 @@ public sealed class ClientPolicyTests
                 await db.SaveChangesAsync();
             }
             using var changedOptional = JsonDocument.Parse(await service.BuildJson());
-            Assert.Equal(revision, changedOptional.RootElement.GetProperty("revision").GetString());
+            Assert.NotEqual(revision, changedOptional.RootElement.GetProperty("revision").GetString());
             Assert.Equal(identity, changedOptional.RootElement.GetProperty("manifestId").GetString());
             Assert.NotEqual(first.RootElement.GetProperty("optionalRevision").GetString(), changedOptional.RootElement.GetProperty("optionalRevision").GetString());
             await service.SetPolicy(optional.Id, "required");

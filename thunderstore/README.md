@@ -2,7 +2,7 @@
 
 This package contains the Valheim Server Manager client plugin. The server agent is installed by the [Docker deployment](https://github.com/monokaijs/valheim-server-manager); it is not part of this Thunderstore package.
 
-The client provides server-owned characters, privacy-controlled inventory inspection, and a read-only **Server mods (F8)** compatibility view. When a server provides a mod list, the view displays required and optional package versions and checks the package metadata already present in the active BepInEx profile.
+The client provides server-owned characters, privacy-controlled inventory inspection, and a read-only mod allowlist check. It checks package metadata already present in the active BepInEx profile. Missing required packages, unlisted packages, or installed optional packages at unlisted versions disconnect the client with a persistent notice.
 
 The client does not download, install, update, or remove mods. No installer, preloader, or mod manager is included. Manage the profile through your external mod manager and restart Valheim after changing packages.
 

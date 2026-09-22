@@ -497,12 +497,18 @@ public sealed class CoreTests
         Assert.False(packages[0].TryGetProperty("contentBase64", out _));
         Assert.False(packages[0].TryGetProperty("sha256", out _));
         Assert.Equal(64, initial.RootElement.GetProperty("revision").GetString()!.Length);
+        Assert.False(initial.RootElement.GetProperty("inventoryInspectionRequired").GetBoolean());
 
         Guid modId;
         await using (var scope = provider.CreateAsyncScope())
             modId = await scope.ServiceProvider.GetRequiredService<ManagerDbContext>().InstalledMods.Select(mod => mod.Id).SingleAsync();
         await service.SetRequired(modId, false);
-        Assert.Equal("", await service.BuildJson());
+        using var noRequired = JsonDocument.Parse(await service.BuildJson());
+        Assert.True(noRequired.RootElement.GetProperty("requiredReceipt").GetBoolean());
+        Assert.Empty(noRequired.RootElement.GetProperty("packages").EnumerateArray());
+        await service.SetPolicy(modId, "optional");
+        using var optionalAllowed = JsonDocument.Parse(await service.BuildJson());
+        Assert.NotEqual(noRequired.RootElement.GetProperty("revision").GetString(), optionalAllowed.RootElement.GetProperty("revision").GetString());
 
         await using (var scope = provider.CreateAsyncScope())
         {
@@ -510,7 +516,8 @@ public sealed class CoreTests
             db.ManagerSettings.Add(new ManagerSetting { Key = "server-characters.enabled", Value = "true" });
             await db.SaveChangesAsync();
         }
-        Assert.Equal("", await service.BuildJson());
+        using var stillNoRequired = JsonDocument.Parse(await service.BuildJson());
+        Assert.Equal(optionalAllowed.RootElement.GetProperty("revision").GetString(), stillNoRequired.RootElement.GetProperty("revision").GetString());
         Directory.Delete(root, true);
     }
 

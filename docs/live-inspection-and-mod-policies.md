@@ -6,7 +6,7 @@
 
 Players need the Server Manager package and `Privacy > AllowInventoryInspection=true` in the client runtime. They receive an explicit disclosure of live, read-only administrator access. The server rejects missing runtimes and refused sharing after the configured grace period; it does **not** silently rewrite a player's privacy preference. Changing the policy gives connected players a new grace period without changing their actual connection timestamp.
 
-Administrators can disable the inspection requirement in **Settings → Client compatibility**. Vanilla compatibility then also depends on server-owned characters and the mandatory gameplay-mod list. A client can lie about reported state: these controls are admission and operational inspection, not tamper-proof anti-cheat or authoritative inventory accounting.
+Administrators can disable the inspection requirement in **Settings → Client compatibility**. The mod allowlist still requires the Server Manager client runtime, even with no required gameplay mods. A client can lie about reported state: these controls are admission and operational inspection, not tamper-proof anti-cheat or authoritative inventory accounting.
 
 ## Live inspection
 
@@ -23,12 +23,12 @@ Freshness uses manager reception and browser receipt times rather than trusting 
 **Mods** has separate policy filters and a three-way selector per managed Thunderstore gameplay package:
 
 - **Required:** checked against every client profile. Its dependencies are also mandatory, regardless of their requested policy. The dashboard identifies which required package promoted a dependency.
-- **Optional:** displayed separately in the read-only client **F8** status view. Optional packages do not affect admission.
+- **Optional:** may be omitted; if installed, the listed version is allowed. Other versions block admission.
 - **Server only:** not checked on clients unless required as a dependency of another package.
 
 Legacy `true` / `false` settings retain their required / server-only meaning. The client runtime is bundled with the Server Manager package and updated through the external mod manager. The client only reads package metadata in the active BepInEx profile. It cannot download or change installed packages.
 
-The server requires an acknowledgment of the current mandatory revision from the client compatibility checker. Optional package changes do not alter that mandatory revision. This acknowledgment reports the client's observed package metadata and is **not** cryptographic attestation of an untampered game process. Dependencies must exist, be enabled and meet the declared minimum version before they can be offered. Administrators should mark a mod optional only when that mod actually supports clients omitting it; the manager cannot make an inherently mandatory gameplay mod optional.
+The server holds world data until it receives an acknowledgment of the current allowlist revision from the client compatibility checker. It disconnects clients without a valid acknowledgment after the configured grace period. Required packages must match exactly; optional packages may be omitted but must match if installed; unlisted plugin packages block admission. The allowlist is enforced even with no required gameplay packages. Optional package changes alter the revision. This acknowledgment reports the client's observed package metadata and is **not** cryptographic attestation of an untampered game process. Dependencies must exist, be enabled and meet the declared minimum version before they can be offered. Administrators should mark a mod optional only when that mod actually supports clients omitting it; the manager cannot make an inherently mandatory gameplay mod optional.
 
 ## Configuration files
 
@@ -48,4 +48,4 @@ A cold-start regression test recreates the service provider against the same SQL
 
 ## Validation boundaries
 
-Automated tests cover persisted policy/password behavior, exact peer IDs, viewer limits, path and symbolic-link refusal, revision conflicts, backups, cross-package ownership, dependency closure, legacy policy migration, optional opt-in/opt-out and server-scoped preferences. Runtime compilation verifies current game API references separately. Real game-client acceptance must also exercise live combat stats, movement/item changes, slow downloads, F8 selection, disconnect/reconnect and policy enforcement on a running server.
+Automated tests cover persisted policy/password behavior, exact peer IDs, viewer limits, path and symbolic-link refusal, revision conflicts, backups, cross-package ownership, dependency closure, legacy policy migration, optional opt-in/opt-out and server-scoped preferences. Runtime compilation verifies current game API references separately. Real game-client acceptance must also exercise live combat stats, movement/item changes, missing-mod disconnect notices, disconnect/reconnect and policy enforcement on a running server.

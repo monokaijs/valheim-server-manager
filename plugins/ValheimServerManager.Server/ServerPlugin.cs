@@ -30,10 +30,11 @@ public sealed class ServerPlugin : BaseUnityPlugin
     public const string PluginVersion = "2.2.2";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.server";
     private const string ClientManifestRpc = "ValheimServerManager_Manifest_v1";
-    private const string LegacyClientManifestRpc = "ServerModBootstrap_Manifest_v1";
     private readonly ConcurrentQueue<Action> _mainThread = new();
     private readonly ConcurrentQueue<string> _outgoing = new();
     private readonly Dictionary<long, DateTime> _joined = new();
+    private readonly Dictionary<ZNetPeer, DateTime> _peerConnectedAt = new();
+    private readonly Dictionary<ZRpc, ZNetPeer> _peersByRpc = new();
     private readonly Dictionary<long, bool> _companions = new();
     private readonly HashSet<long> _serverCharacterClients = new();
     private readonly HashSet<long> _characterEnforcementHandled = new();
@@ -388,6 +389,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
 
     private static void DisconnectPeer(ZNetPeer peer)
     {
+        PeerInfoPatch.Discard(peer);
         var method = AccessTools.Method(typeof(ZNet), "InternalKick", new[] { typeof(ZNetPeer) }) ?? AccessTools.Method(typeof(ZNet), "Kick", new[] { typeof(ZNetPeer) });
         if (method != null) method.Invoke(ZNet.instance, new object[] { peer }); else peer.m_rpc?.GetSocket()?.Close();
     }
@@ -495,6 +497,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         {
             RelayClientManifest(peer);
         }
+        PeerInfoPatch.ReleaseReadyGates();
     }
 
     private void EnforceRequiredMods()
@@ -503,11 +506,17 @@ public sealed class ServerPlugin : BaseUnityPlugin
         if (string.IsNullOrEmpty(_requiredModRevision)) return;
         foreach (var peer in ZNet.instance.GetPeers().ToArray())
         {
-            if (peer == null || !_joined.TryGetValue(peer.m_uid, out var joined)
-                || DateTime.UtcNow - joined < TimeSpan.FromSeconds(_clientGraceSeconds.Value)
+            if (peer == null || !_peerConnectedAt.TryGetValue(peer, out var connectedAt)
+                || DateTime.UtcNow - connectedAt < TimeSpan.FromSeconds(_clientGraceSeconds.Value)
                 || (_modReceipts.TryGetValue(peer, out var receipt) && receipt == _requiredModRevision)
-                || _scheduledKicks.ContainsKey(peer.m_uid) || !_modEnforcementHandled.Add(peer.m_uid)) continue;
-            const string reason = "This realm requires specific mod versions. Review Server mods (F8), manage missing packages with your external mod manager, then restart Valheim and reconnect. Optional mods are not required for admission.";
+                || (peer.m_uid != 0 && (_scheduledKicks.ContainsKey(peer.m_uid) || !_modEnforcementHandled.Add(peer.m_uid)))) continue;
+            const string reason = "This realm only permits its listed mod versions. Install required packages and remove unlisted packages in your external mod manager, then restart Valheim and reconnect. Listed optional packages may be omitted.";
+            if (peer.m_uid == 0)
+            {
+                InvokePeer(peer, "VSM_AdminNotice", "Required mods not ready", reason);
+                DisconnectPeer(peer);
+                continue;
+            }
             ScheduleKick(peer, "Required mods not ready", reason, reason, "mods.client.required");
             if (_scheduledKicks.TryGetValue(peer.m_uid, out var kick)) kick.ModRequirement = true;
         }
@@ -729,10 +738,17 @@ public sealed class ServerPlugin : BaseUnityPlugin
         }
         catch (Exception exception) { Logger.LogWarning($"Could not capture rejected join request: {exception.GetBaseException().Message}"); }
     }
-    private static ZNetPeer PeerForRpc(ZNet znet, ZRpc rpc) => znet.GetPeers().FirstOrDefault(peer => peer != null && peer.m_rpc == rpc);
+    private static ZNetPeer PeerForRpc(ZNet znet, ZRpc rpc)
+    {
+        if (rpc == null) return null;
+        var peer = znet?.GetPeers().FirstOrDefault(item => item != null && item.m_rpc == rpc);
+        return peer ?? (Instance != null && Instance._peersByRpc.TryGetValue(rpc, out var pending) ? pending : null);
+    }
     internal void RegisterPeerProtocol(ZNet znet, ZNetPeer peer)
     {
         if (znet == null || peer?.m_rpc == null) return;
+        _peerConnectedAt[peer] = DateTime.UtcNow;
+        _peersByRpc[peer.m_rpc] = peer;
         peer.m_rpc.Register<string>("VSM_ModReceipt", (rpc, revision) =>
         {
             if (!ReferenceEquals(rpc, peer.m_rpc) || revision == null || revision.Length != 64) return;
@@ -741,6 +757,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
             {
                 _modEnforcementHandled.Remove(peer.m_uid);
                 if (_scheduledKicks.TryGetValue(peer.m_uid, out var kick) && kick.ModRequirement) _scheduledKicks.Remove(peer.m_uid);
+                PeerInfoPatch.ReleaseIfReady(peer);
             }
         });
         peer.m_rpc.Register<bool, string>("VSM_ClientHello", (rpc, allowed, version) => ClientHelloForPeer(znet, peer, rpc, allowed, version));
@@ -782,6 +799,9 @@ public sealed class ServerPlugin : BaseUnityPlugin
     {
         if (peer == null) return;
         _pendingPeerHellos.Remove(peer);
+        _peerConnectedAt.Remove(peer);
+        if (peer.m_rpc != null) _peersByRpc.Remove(peer.m_rpc);
+        PeerInfoPatch.Discard(peer);
         _modReceipts.Remove(peer);
         _modEnforcementHandled.Remove(peer.m_uid);
         var joined = _joined.Remove(peer.m_uid);
@@ -807,7 +827,6 @@ public sealed class ServerPlugin : BaseUnityPlugin
         try
         {
             peer.m_rpc.Invoke(ClientManifestRpc, manifest);
-            peer.m_rpc.Invoke(LegacyClientManifestRpc, manifest);
             Logger.LogInfo($"Relayed the client mod manifest to peer {peer.m_uid}.");
         }
         catch (Exception exception) { Logger.LogWarning($"Could not relay the client mod manifest: {exception.GetBaseException().Message}"); }
@@ -832,6 +851,8 @@ public sealed class ServerPlugin : BaseUnityPlugin
     [HarmonyPatch(typeof(ZNet), "RPC_PeerInfo")]
     private static class PeerInfoPatch
     {
+        private static readonly Dictionary<ZNetPeer, BufferedSocket> PendingModGates = new();
+
         private sealed class BufferedSocket : ISocket
         {
             internal readonly ISocket Original;
@@ -893,13 +914,16 @@ public sealed class ServerPlugin : BaseUnityPlugin
                 if (_packets.Count == _versionMatchIndex) Original.VersionMatch();
                 _packets.Clear();
             }
+
+            internal void Discard() { _released = true; _packets.Clear(); }
         }
 
         [HarmonyPriority(Priority.First)]
         private static void Prefix(ZNet __instance, ZRpc rpc, ref BufferedSocket __state)
         {
             if (!__instance.IsServer()
-                || !ConnectionPolicy.ShouldBufferWorldTraffic(Instance?._serverCharactersEnabled?.Value == true)
+                || !ConnectionPolicy.ShouldBufferWorldTraffic(Instance?._serverCharactersEnabled?.Value == true,
+                    !string.IsNullOrEmpty(Instance?._requiredModRevision))
                 || rpc?.GetSocket() == null) return;
             __state = new BufferedSocket(rpc.GetSocket());
             Traverse.Create(rpc).Field("m_socket").SetValue(__state);
@@ -910,20 +934,23 @@ public sealed class ServerPlugin : BaseUnityPlugin
         {
             if (!__instance.IsServer()) return;
             var peer = PeerForRpc(__instance, rpc);
+            var holdForMods = false;
             try
             {
-                // A non-null state snapshots that server characters were enabled when this
-                // handshake began. Send the profile before releasing Valheim's world data.
-                if (__state != null)
+                // Send the server character before releasing Valheim's world data.
+                if (__state != null && Instance._serverCharactersEnabled.Value)
                 {
                     InvokePeer(peer, "VSM_ServerPolicy", true, Instance._clientGraceSeconds.Value);
                     Instance.SendServerCharacter(peer);
                 }
-                Instance.Joined(peer);
+                holdForMods = __state != null && peer != null && !string.IsNullOrEmpty(Instance._requiredModRevision)
+                    && (!Instance._modReceipts.TryGetValue(peer, out var receipt) || receipt != Instance._requiredModRevision);
+                if (!holdForMods) Instance.Joined(peer);
             }
             finally
             {
-                RestoreSocket(rpc, __state);
+                if (holdForMods) PendingModGates[peer] = __state;
+                else RestoreSocket(rpc, __state);
             }
         }
 
@@ -931,15 +958,43 @@ public sealed class ServerPlugin : BaseUnityPlugin
         // socket so an optional VSM feature can never leave the connection intercepted.
         private static Exception Finalizer(ZRpc rpc, BufferedSocket __state, Exception __exception)
         {
-            RestoreSocket(rpc, __state);
+            if (__exception != null)
+            {
+                var peer = ZNet.instance == null ? null : PeerForRpc(ZNet.instance, rpc);
+                if (peer != null) PendingModGates.Remove(peer);
+                RestoreSocket(rpc, __state, false);
+            }
             return __exception;
         }
 
-        private static void RestoreSocket(ZRpc rpc, BufferedSocket state)
+        internal static void ReleaseIfReady(ZNetPeer peer)
         {
-            if (rpc == null || state == null) return;
+            if (peer == null || !PendingModGates.TryGetValue(peer, out var state)) return;
+            if (!string.IsNullOrEmpty(Instance._requiredModRevision)
+                && (!Instance._modReceipts.TryGetValue(peer, out var receipt) || receipt != Instance._requiredModRevision)) return;
+            PendingModGates.Remove(peer);
+            try { Instance.Joined(peer); }
+            finally { RestoreSocket(peer.m_rpc, state); }
+        }
+
+        internal static void ReleaseReadyGates()
+        {
+            foreach (var peer in PendingModGates.Keys.ToArray()) ReleaseIfReady(peer);
+        }
+
+        internal static void Discard(ZNetPeer peer)
+        {
+            if (peer == null || !PendingModGates.TryGetValue(peer, out var state)) return;
+            PendingModGates.Remove(peer);
+            RestoreSocket(peer.m_rpc, state, false);
+        }
+
+        private static void RestoreSocket(ZRpc rpc, BufferedSocket state, bool release = true)
+        {
+            if (state == null) return;
+            if (rpc == null || !ReferenceEquals(rpc.GetSocket(), state)) { state.Discard(); return; }
             Traverse.Create(rpc).Field("m_socket").SetValue(state.Original);
-            state.Release();
+            if (release) state.Release(); else state.Discard();
         }
     }
     [HarmonyPatch(typeof(ZNet), "RPC_CharacterID")]
