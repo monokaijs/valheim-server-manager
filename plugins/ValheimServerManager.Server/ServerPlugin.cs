@@ -50,6 +50,10 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private string _saveRequestId;
     private bool _rpcsRegistered;
     private volatile string _clientModManifest;
+    private string _requiredModRevision;
+    private DateTime _policyGraceUntil;
+    private readonly Dictionary<ZNetPeer, string> _modReceipts = new();
+    private readonly HashSet<long> _modEnforcementHandled = new();
     private volatile string _pluginRegistryMessage;
     private string _serverName = "Valheim Server";
     private string _welcomeMessage = "Welcome {player} to {server}.";
@@ -59,6 +63,8 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private ConfigEntry<string> _managerUrl;
     private ConfigEntry<string> _agentToken;
     private ConfigEntry<bool> _serverCharactersEnabled;
+    private ConfigEntry<bool> _requireInventoryInspection;
+    private readonly HashSet<long> _inspectionEnforcementHandled = new();
     private ConfigEntry<bool> _acceptFirstJoinProfile;
     private ConfigEntry<bool> _rejectPreviouslyUsedCharacters;
     private ConfigEntry<int> _characterBackups;
@@ -78,6 +84,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         MigrateLegacyConfig();
         _managerUrl = Config.Bind("Connection", "ManagerUrl", Environment.GetEnvironmentVariable("VSM_AGENT_URL") ?? "ws://127.0.0.1:8080/internal/agent", "Loopback manager WebSocket URL.");
         _agentToken = Config.Bind("Connection", "AgentToken", "", "Shared manager token; the VSM_AGENT_TOKEN environment variable takes precedence and is not persisted.");
+        _requireInventoryInspection = Config.Bind("Inspection", "Required", true, "Require the client runtime and inventory sharing to remain connected. Players receive an explicit disclosure; local privacy settings are never rewritten.");
         _serverCharactersEnabled = Config.Bind("ServerCharacters", "Enabled", false, "Make the server copy of each native Valheim character authoritative. When disabled, players without mods can join normally.");
         _acceptFirstJoinProfile = Config.Bind("ServerCharacters", "AcceptFirstJoinProfile", true, "Allow a character without a server save to seed its first server-owned profile. Disable after migration for a closed realm.");
         _rejectPreviouslyUsedCharacters = Config.Bind("ServerCharacters", "RejectPreviouslyUsedCharacters", false, "When accepting a first-join profile, require a character that has never entered another world or server.");
@@ -150,6 +157,8 @@ public sealed class ServerPlugin : BaseUnityPlugin
             SendServerCharacter(peerId);
         }
         if (_serverCharactersEnabled.Value) EnforceServerCharacterClients();
+        if (_requireInventoryInspection.Value) EnforceInventoryInspection();
+        EnforceRequiredMods();
     }
 
     private void Patch(Type patch)
@@ -209,11 +218,13 @@ public sealed class ServerPlugin : BaseUnityPlugin
                 if (manifest.Length == 0)
                 {
                     _clientModManifest = null;
+                    _mainThread.Enqueue(() => ApplyModReceiptPolicy(null));
                     Logger.LogInfo("Client mod synchronization is inactive; no client manifest will be relayed.");
                 }
                 else if (Encoding.UTF8.GetByteCount(manifest) <= 8 * 1024 * 1024)
                 {
                     _clientModManifest = manifest;
+                    _mainThread.Enqueue(() => ApplyModReceiptPolicy(manifest));
                     Logger.LogInfo($"Loaded client mod manifest ({manifest.Length} characters).");
                 }
                 else Logger.LogWarning("Rejected an oversized client mod manifest from the manager.");
@@ -335,6 +346,16 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private void ApplyServerCharacterSettings(JObject payload)
     {
         if (payload == null) return;
+        if (payload["requireInventoryInspection"]?.Type == JTokenType.Boolean)
+            _requireInventoryInspection.Value = (bool)payload["requireInventoryInspection"];
+        _inspectionEnforcementHandled.Clear();
+        foreach (var scheduled in _scheduledKicks.Where(item => item.Value.InspectionRequirement).Select(item => item.Key).ToArray())
+            _scheduledKicks.Remove(scheduled);
+        foreach (var peer in ZNet.instance?.GetPeers() ?? new List<ZNetPeer>())
+        {
+            // A changed policy gets a fresh grace period, including already connected players.
+            InvokePeer(peer, "VSM_InspectionPolicy", _requireInventoryInspection.Value);
+        }
         if (payload["enabled"]?.Type == JTokenType.Boolean)
             _serverCharactersEnabled.Value = (bool)payload["enabled"];
         if (payload["acceptFirstJoinProfile"]?.Type == JTokenType.Boolean)
@@ -352,6 +373,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
             foreach (var scheduled in _scheduledKicks.Where(item => item.Value.ServerCharacterRequirement).Select(item => item.Key).ToArray())
                 _scheduledKicks.Remove(scheduled);
         }
+        _policyGraceUntil = DateTime.UtcNow.AddSeconds(_clientGraceSeconds.Value);
         Config.Save();
         Logger.LogInfo($"Applied server-character policy: enabled={_serverCharactersEnabled.Value}, acceptFirstJoin={_acceptFirstJoinProfile.Value}, rejectPreviouslyUsed={_rejectPreviouslyUsedCharacters.Value}, backups={_characterBackups.Value}, clientGrace={_clientGraceSeconds.Value}s.");
     }
@@ -389,7 +411,9 @@ public sealed class ServerPlugin : BaseUnityPlugin
         return value.Length is > 0 && value.Length <= maximum && !value.Any(character => char.IsControl(character) && character != '\n') ? value : fallback;
     }
 
-    private sealed class ScheduledKick { public DateTime Due; public bool ServerCharacterRequirement; }
+    private sealed class ScheduledKick { public DateTime Due; public bool ServerCharacterRequirement;
+        public bool InspectionRequirement;
+        public bool ModRequirement; }
 
     private void SendSnapshot()
     {
@@ -453,8 +477,61 @@ public sealed class ServerPlugin : BaseUnityPlugin
         }
     }
 
+    private void ApplyModReceiptPolicy(string json)
+    {
+        string required = null;
+        try
+        {
+            var manifest = json == null ? null : JObject.Parse(json);
+            if ((bool?)manifest?["requiredReceipt"] == true) required = (string)manifest["revision"];
+        }
+        catch (JsonException) { Logger.LogWarning("Invalid managed-client policy manifest."); }
+        if (required == _requiredModRevision) return;
+        _requiredModRevision = required;
+        _policyGraceUntil = DateTime.UtcNow.AddSeconds(_clientGraceSeconds.Value);
+        _modEnforcementHandled.Clear();
+        foreach (var scheduled in _scheduledKicks.Where(item => item.Value.ModRequirement).Select(item => item.Key).ToArray()) _scheduledKicks.Remove(scheduled);
+        foreach (var peer in ZNet.instance?.GetPeers() ?? new List<ZNetPeer>())
+        {
+            RelayClientManifest(peer);
+        }
+    }
+
+    private void EnforceRequiredMods()
+    {
+        if (DateTime.UtcNow < _policyGraceUntil) return;
+        if (string.IsNullOrEmpty(_requiredModRevision)) return;
+        foreach (var peer in ZNet.instance.GetPeers().ToArray())
+        {
+            if (peer == null || !_joined.TryGetValue(peer.m_uid, out var joined)
+                || DateTime.UtcNow - joined < TimeSpan.FromSeconds(_clientGraceSeconds.Value)
+                || (_modReceipts.TryGetValue(peer, out var receipt) && receipt == _requiredModRevision)
+                || _scheduledKicks.ContainsKey(peer.m_uid) || !_modEnforcementHandled.Add(peer.m_uid)) continue;
+            const string reason = "This realm requires the managed mod list. Install Server Manager, let it prepare the required mods, then restart Valheim and reconnect. Optional mods are your choice and are not required for admission.";
+            ScheduleKick(peer, "Required mods not ready", reason, reason, "mods.client.required");
+            if (_scheduledKicks.TryGetValue(peer.m_uid, out var kick)) kick.ModRequirement = true;
+        }
+    }
+
+    private void EnforceInventoryInspection()
+    {
+        if (DateTime.UtcNow < _policyGraceUntil) return;
+        foreach (var peer in ZNet.instance.GetPeers().ToArray())
+        {
+            if (peer == null || !_joined.TryGetValue(peer.m_uid, out var joined)
+                || DateTime.UtcNow - joined < TimeSpan.FromSeconds(_clientGraceSeconds.Value)
+                || (_companions.TryGetValue(peer.m_uid, out var allowed) && allowed)
+                || _scheduledKicks.ContainsKey(peer.m_uid)
+                || !_inspectionEnforcementHandled.Add(peer.m_uid)) continue;
+            const string reason = "This realm requires live, read-only inventory and character inspection by authenticated administrators. Install Server Manager and enable Privacy > AllowInventoryInspection in its client configuration, then reconnect. No inventory snapshots are saved or sent to webhooks.";
+            ScheduleKick(peer, "Inventory sharing required", reason, reason, "inspection.client.required");
+            if (_scheduledKicks.TryGetValue(peer.m_uid, out var kick)) kick.InspectionRequirement = true;
+        }
+    }
+
     private void EnforceServerCharacterClients()
     {
+        if (DateTime.UtcNow < _policyGraceUntil) return;
         foreach (var peer in ZNet.instance.GetPeers().Where(peer => peer != null && _joined.TryGetValue(peer.m_uid, out var joined) && DateTime.UtcNow - joined > TimeSpan.FromSeconds(_clientGraceSeconds.Value) && !_serverCharacterClients.Contains(peer.m_uid) && !_characterEnforcementHandled.Contains(peer.m_uid)).ToArray())
         {
             _characterEnforcementHandled.Add(peer.m_uid);
@@ -568,6 +645,12 @@ public sealed class ServerPlugin : BaseUnityPlugin
         if (characterCapable) _serverCharacterClients.Add(sender);
         else _serverCharacterClients.Remove(sender);
         InvokePeer(peer, "VSM_ServerPolicy", _serverCharactersEnabled.Value, _clientGraceSeconds.Value);
+        InvokePeer(peer, "VSM_InspectionPolicy", _requireInventoryInspection.Value);
+        if (inventoryAllowed)
+        {
+            _inspectionEnforcementHandled.Remove(sender);
+            if (_scheduledKicks.TryGetValue(sender, out var kick) && kick.InspectionRequirement) _scheduledKicks.Remove(sender);
+        }
         if (firstHello || previousInventory != inventoryAllowed || previouslyCapable != characterCapable)
         {
             Logger.LogInfo($"Client runtime handshake from peer {sender}: version={companionVersion}, inventory={inventoryAllowed}, serverCharacters={characterCapable}.");
@@ -606,7 +689,10 @@ public sealed class ServerPlugin : BaseUnityPlugin
     {
         if (!_inventoryRequests.TryGetValue(requestId, out var pending) || pending.Item1 != sender) return;
         _inventoryRequests.Remove(requestId);
-        Enqueue(new { type = "inventoryResponse", requestId, payload = JObject.Parse(json) });
+        if (json == null || Encoding.UTF8.GetByteCount(json) > 2 * 1024 * 1024)
+        { Reply(requestId, new { ok = false, error = "Inventory response exceeded the 2 MiB limit." }); return; }
+        try { Enqueue(new { type = "inventoryResponse", requestId, payload = JObject.Parse(json) }); }
+        catch (JsonException) { Reply(requestId, new { ok = false, error = "Invalid inventory response." }); }
     }
     internal void CompanionEvent(long sender, string json)
     {
@@ -647,6 +733,16 @@ public sealed class ServerPlugin : BaseUnityPlugin
     internal void RegisterPeerProtocol(ZNet znet, ZNetPeer peer)
     {
         if (znet == null || peer?.m_rpc == null) return;
+        peer.m_rpc.Register<string>("VSM_ModReceipt", (rpc, revision) =>
+        {
+            if (!ReferenceEquals(rpc, peer.m_rpc) || revision == null || revision.Length != 64) return;
+            _modReceipts[peer] = revision;
+            if (revision == _requiredModRevision)
+            {
+                _modEnforcementHandled.Remove(peer.m_uid);
+                if (_scheduledKicks.TryGetValue(peer.m_uid, out var kick) && kick.ModRequirement) _scheduledKicks.Remove(peer.m_uid);
+            }
+        });
         peer.m_rpc.Register<bool, string>("VSM_ClientHello", (rpc, allowed, version) => ClientHelloForPeer(znet, peer, rpc, allowed, version));
         peer.m_rpc.Register<string, string>("VSM_InventoryResponse", (rpc, request, json) =>
         {
@@ -686,8 +782,11 @@ public sealed class ServerPlugin : BaseUnityPlugin
     {
         if (peer == null) return;
         _pendingPeerHellos.Remove(peer);
+        _modReceipts.Remove(peer);
+        _modEnforcementHandled.Remove(peer.m_uid);
         var joined = _joined.Remove(peer.m_uid);
         _companions.Remove(peer.m_uid);
+        _inspectionEnforcementHandled.Remove(peer.m_uid);
         _serverCharacterClients.Remove(peer.m_uid);
         _characterEnforcementHandled.Remove(peer.m_uid);
         _pendingCharacterProfiles.Remove(peer.m_uid);

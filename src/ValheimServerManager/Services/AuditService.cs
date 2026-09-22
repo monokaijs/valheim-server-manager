@@ -5,13 +5,13 @@ namespace ValheimServerManager.Services;
 
 public sealed class AuditService(IServiceScopeFactory scopes, IHttpContextAccessor accessor)
 {
-    public async Task Write(string action, string target, string result = "success", string detail = "", string? correlationId = null)
+    public async Task Write(string action, string target, string result = "success", string detail = "", string? correlationId = null, string? actor = null)
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();
         db.AuditRecords.Add(new AuditRecord
         {
-            Actor = accessor.HttpContext?.User.FindFirstValue(ClaimTypes.Name) ?? "system",
+            Actor = actor ?? accessor.HttpContext?.User.FindFirstValue(ClaimTypes.Name) ?? "system",
             Action = action,
             Target = target,
             Result = result,

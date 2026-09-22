@@ -8,10 +8,12 @@ public sealed record ServerCharacterSettings(
     bool AcceptFirstJoinProfile,
     bool RejectPreviouslyUsedCharacters,
     int BackupsToKeep,
-    int ClientGraceSeconds);
+    int ClientGraceSeconds,
+    bool RequireInventoryInspection = true);
 
 public sealed class ServerCharacterSettingsService(IServiceScopeFactory scopes, IConfiguration configuration)
 {
+    public const string InspectionRequiredKey = "inventory-inspection.required";
     private const string EnabledKey = "server-characters.enabled";
     private const string AcceptKey = "server-characters.accept-first-join-profile";
     private const string RejectUsedKey = "server-characters.reject-previously-used";
@@ -24,14 +26,15 @@ public sealed class ServerCharacterSettingsService(IServiceScopeFactory scopes, 
         var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();
         var values = await db.ManagerSettings.AsNoTracking()
             .Where(item => item.Key == EnabledKey || item.Key == AcceptKey || item.Key == RejectUsedKey
-                || item.Key == BackupsKey || item.Key == ClientGraceKey)
+                || item.Key == BackupsKey || item.Key == ClientGraceKey || item.Key == InspectionRequiredKey)
             .ToDictionaryAsync(item => item.Key, item => item.Value, cancellationToken);
         return new ServerCharacterSettings(
             Read(values, EnabledKey, configuration.GetValue("VSM_SERVER_CHARACTERS_ENABLED", false)),
             Read(values, AcceptKey, configuration.GetValue("VSM_SERVER_CHARACTERS_ACCEPT_FIRST_JOIN", true)),
             Read(values, RejectUsedKey, configuration.GetValue("VSM_SERVER_CHARACTERS_REJECT_USED", false)),
             Read(values, BackupsKey, configuration.GetValue("VSM_SERVER_CHARACTERS_BACKUPS", 10), 1, 50),
-            Read(values, ClientGraceKey, configuration.GetValue("VSM_CLIENT_MOD_GRACE_SECONDS", 20), 5, 120));
+            Read(values, ClientGraceKey, configuration.GetValue("VSM_CLIENT_MOD_GRACE_SECONDS", 20), 5, 120),
+            Read(values, InspectionRequiredKey, configuration.GetValue("VSM_REQUIRE_INVENTORY_INSPECTION", true)));
     }
 
     public async Task<ServerCharacterSettings> Set(ServerCharacterSettings settings, CancellationToken cancellationToken = default)
@@ -41,6 +44,7 @@ public sealed class ServerCharacterSettingsService(IServiceScopeFactory scopes, 
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();
         await Put(db, EnabledKey, settings.Enabled, cancellationToken);
+        await Put(db, InspectionRequiredKey, settings.RequireInventoryInspection, cancellationToken);
         await Put(db, AcceptKey, settings.AcceptFirstJoinProfile, cancellationToken);
         await Put(db, RejectUsedKey, settings.RejectPreviouslyUsedCharacters, cancellationToken);
         await Put(db, BackupsKey, settings.BackupsToKeep, cancellationToken);
@@ -58,7 +62,8 @@ public sealed class ServerCharacterSettingsService(IServiceScopeFactory scopes, 
             acceptFirstJoinProfile = settings.AcceptFirstJoinProfile,
             rejectPreviouslyUsedCharacters = settings.RejectPreviouslyUsedCharacters,
             backupsToKeep = settings.BackupsToKeep,
-            clientGraceSeconds = settings.ClientGraceSeconds
+            clientGraceSeconds = settings.ClientGraceSeconds,
+            requireInventoryInspection = settings.RequireInventoryInspection
         };
     }
 

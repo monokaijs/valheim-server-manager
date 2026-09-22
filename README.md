@@ -7,7 +7,7 @@ A self-hosted Valheim control plane with a web dashboard, live server agent, ser
 - One-container Linux deployment that installs the dedicated server with SteamCMD and supervises it without access to the Docker socket.
 - React/shadcn dashboard based on the `dashboard-01` shell for status, online players, live character inspection, access lists, Thunderstore/manual mods, webhooks, safe console commands, and auditing.
 - BepInEx server agent built at startup against the exact installed Valheim assemblies.
-- Vanilla-compatible by default. Server-owned characters and managed-client enforcement are a single optional switch; dashboard inventory inspection and detailed telemetry remain independently opt-in.
+- Inventory inspection is required by default as an explicit server admission rule. Server-owned characters remain independently optional; disable the inspection requirement and mandatory client mods to allow vanilla clients.
 - SQLite persistence, Steam OpenID authentication restricted to `adminlist.txt`, secure cookies, CSRF protection, login throttling, SignalR updates, signed webhook delivery, and automatic mod rollback.
 
 The server plugin identifier is `dev.creaton.valheim-server-manager`; the automatically managed client runtime uses `dev.creaton.valheim-server-manager.client`. Older `dev.monokai.*` configuration files are copied forward automatically on first load and retained as rollback copies.
@@ -23,7 +23,7 @@ docker compose pull
 docker compose up -d
 ```
 
-That is enough to start a private, passwordless, vanilla-compatible server. Open port `8080` for the dashboard and UDP `2456-2458` for Valheim. Set `VSM_PUBLIC_URL` before using Steam dashboard sign-in; the authenticated Steam64 ID must appear in `adminlist.txt` as either `Steam_<id>` or the numeric ID. Put the dashboard behind HTTPS before exposing it to the internet.
+That starts a private, passwordless server with inventory-sharing admission enabled. Players need the Server Manager runtime and must enable inventory sharing to stay connected. Open port `8080` for the dashboard and UDP `2456-2458` for Valheim. Set `VSM_PUBLIC_URL` before using Steam dashboard sign-in; the authenticated Steam64 ID must appear in `adminlist.txt` as either `Steam_<id>` or the numeric ID. Put the dashboard behind HTTPS before exposing it to the internet.
 
 The first start takes several minutes because it downloads Valheim, installs BepInEx, and compiles both plugins. Game, world, manager, log, and BepInEx data live in named Docker volumes.
 
@@ -68,11 +68,12 @@ Install the Server Manager ZIP through r2modman/Thunderstore Mod Manager or copy
 
 Server Manager synchronization owns `BepInEx/plugins/ValheimServerManagerManaged` and its single allowlisted updater DLL at `BepInEx/plugins/ValheimServerManager/ValheimServerManagerRuntimeUpdater.dll`; personal plugins are left alone. Manual ZIP uploads and other protected infrastructure are server-only because the manager has no stable Thunderstore source for them. The client-targeted Server Manager runtime is embedded in the relayed manifest with an exact size and SHA-256, so the dashboard does not need to be publicly reachable.
 
-Players without mods can join by default. Under **Settings → Server → Client compatibility**, enable managed-client mode only when server-owned characters are wanted. The same defaults are configurable before first start:
+Under **Settings → Server → Client compatibility**, inventory inspection is required by default and server-owned characters are independently optional. Vanilla admission requires disabling the inventory requirement and removing all mandatory managed-client requirements. The same defaults are configurable before first start:
 
 With server-owned characters disabled, VSM leaves Valheim's peer-info and world-data connection path untouched. Optional notices, telemetry, and manifest discovery never delay admission; only Valheim's native authentication/version rules and explicitly required managed mods can block a connection.
 
 ```env
+VSM_REQUIRE_INVENTORY_INSPECTION=true
 VSM_SERVER_CHARACTERS_ENABLED=false
 VSM_SERVER_CHARACTERS_ACCEPT_FIRST_JOIN=true
 VSM_SERVER_CHARACTERS_REJECT_USED=false
@@ -80,7 +81,7 @@ VSM_SERVER_CHARACTERS_BACKUPS=10
 VSM_CLIENT_MOD_GRACE_SECONDS=20
 ```
 
-When server-owned characters are enabled, the player can separately opt into dashboard inspection and telemetry through:
+Players explicitly grant inventory sharing below. A server requiring inspection rejects players who decline after its grace period; it does not rewrite their privacy settings. Detailed telemetry remains independently optional:
 
 ```ini
 [Privacy]
@@ -91,7 +92,7 @@ AllowDetailedTelemetry = false
 Enabled = true
 ```
 
-Character snapshots are requested live and include current stats, biome, skills, equipment, inventory placement, item metadata, durability, and game-rendered item icons. They are returned only to the authenticated dashboard and are not saved or sent to webhooks.
+The live inspection desk continuously requests current stats, biome, skills, equipment, inventory placement, item metadata, durability, and game-rendered item icons while an administrator is watching. It shows sample freshness, slot changes, searchable skills, and item details; pausing, hiding the tab, or closing the view stops sampling. Snapshots are returned only to the authenticated requesting administrator and are not saved or sent to webhooks. These are client-reported observations, not cheat-proof inventory transactions.
 
 ## Server-owned characters and migration
 
@@ -131,9 +132,9 @@ VSM no longer adds a character-negotiation delay to vanilla connections. A serve
 
 Thunderstore installs pin exact versions and dependencies. The container-managed BepInEx pack and Server Manager package are treated as built-in infrastructure: they are hidden from catalog results, rejected as direct installs, and automatically satisfy compatible dependency declarations without overwriting live BepInEx files. The installer supports packages containing a root plugin DLL or asset tree, direct `plugins/`, `patchers/`, or `config/` directories, and wrapped `BepInEx/` layouts. Manual uploads must use the Thunderstore package layout with a root `manifest.json`; their declared Thunderstore dependencies are resolved too. Uploads reject traversal paths, symlinks, oversized archives, managed collisions, and unmanaged overwrites.
 
-Each managed package has a structured **Configure** editor after it has loaded once. The server agent reports BepInEx plugin GUIDs, DLL locations, and primary config paths; the manager then exposes only `.cfg` files belonging to DLLs tracked by that package. The editor preserves comments and formatting, uses optimistic revision checks, masks password/token-like values, writes atomically, retains 20 backups per file, audits changes without recording values, and supports either saving for the next restart or an immediate save-and-restart. Protected manager infrastructure and unmanaged config files remain inaccessible.
+Each managed package has a structured **Configure** editor after it has loaded once. The server agent reports BepInEx plugin GUIDs, DLL locations, and primary config paths; the manager then exposes only `.cfg` files belonging to DLLs tracked by that package. The editor preserves comments and formatting, uses optimistic revision checks, masks password/token-like values, writes atomically, retains 20 backups per file, audits changes without recording values, and supports either saving for the next restart or an immediate save-and-restart. Protected manager infrastructure and unrelated config files remain inaccessible. The per-mod **Files** tab and **File manager** page add scoped folder trees and text-file creation, editing, rename, and deletion for CFG, JSON, YAML, TOML, INI, TXT, and XML. Raw content is revealed explicitly, writes are revision-checked and backed up, and links/traversal/executables are rejected. See [live inspection and mod policies](docs/live-inspection-and-mod-policies.md) for admission, file namespace, compatibility, and rollout details.
 
-Enabled Thunderstore packages are client-required by default. Use the **Clients** switch to mark genuinely server-only packages. Gameplay-mod manifests contain only the selected Thunderstore packages; the embedded VSM client runtime is included only when server-owned characters require it. The active client manifest is published only by the authenticated loopback control channel and is relayed over the joining peer's game RPC; clients do not need a dashboard URL, token, or per-server configuration.
+Enabled Thunderstore packages are client-required by default. Choose **Mandatory**, **Optional**, or **Server only** per package. Required dependencies remain mandatory even when their own selection is optional. Players choose optional packages in the runtime’s **Server optional mods (F8)** picker; choices default off and persist per server. Changes to loaded packages require a Valheim restart. The embedded VSM runtime is included whenever client management is active. The active client manifest is published only by the authenticated loopback control channel and is relayed over the joining peer's game RPC; clients do not need a dashboard URL, token, or per-server configuration.
 
 Changes are staged. **Apply & restart** requests a world save, snapshots BepInEx, restarts the server, waits up to 120 seconds for the agent, and restores the snapshot if the agent does not reconnect. Mod DLLs are arbitrary native-equivalent server code; install only packages you trust.
 

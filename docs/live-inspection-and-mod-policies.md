@@ -1,0 +1,51 @@
+# Live inspection, client admission, and configuration workspaces
+
+## Admission and rollout
+
+`VSM_REQUIRE_INVENTORY_INSPECTION=true` is the initial default. The saved dashboard setting takes precedence after an administrator changes it. This rule is independent of server-owned character saves: disabling server characters does not disable inspection enforcement. Deploying this release with the default enabled changes admission for existing vanilla clients.
+
+Players need the Server Manager package and `Privacy > AllowInventoryInspection=true` in the client runtime. They receive an explicit disclosure of live, read-only administrator access. The server rejects missing runtimes and refused sharing after the configured grace period; it does **not** silently rewrite a player's privacy preference. Changing the policy gives connected players a new grace period without changing their actual connection timestamp.
+
+Administrators can disable the inspection requirement in **Settings → Client compatibility**. Vanilla compatibility then also depends on server-owned characters and the mandatory gameplay-mod list. A client can lie about reported state: these controls are admission and operational inspection, not tamper-proof anti-cheat or authoritative inventory accounting.
+
+## Live inspection
+
+Open **Players → Inspect character** or **Characters → Inspect live character**. The inspection desk includes a player roster, health/stamina/eitr meters, armor and carry values, spatial inventory/hotbar slots, equipment, searchable skills, selected-item metadata, and a bounded session-only slot-change feed. It uses actual client-provided PNG icons, not fabricated item artwork.
+
+The authenticated SignalR `WatchPlayer` stream samples approximately every 1.25 seconds, after the previous request finishes. Multiple viewers of the same player share a single in-flight game request and short-lived sample. Up to four views per administrator and 64 views overall are allowed. A 64-bit string `peerKey` avoids JavaScript precision loss when targeting players.
+
+The hub rechecks the Steam administrator list throughout a stream. Pause, tab hiding, player switching, dialog closure and disconnect cancel the subscription; an already-started shared game request may finish, but no further samples are scheduled for that closed view. Data is sent only to the subscribed administrator, never broadcast to the general live hub, persisted to the database, or forwarded to webhooks. Only watch start/stop metadata is audited. Transient samples are dropped when the last viewer leaves.
+
+Freshness uses manager reception and browser receipt times rather than trusting the client's clock. The UI stops saying **Live** after five seconds without a fresh successful sample. Paused, stale, unavailable, offline and disconnected views clearly identify retained data as last-received information. These are sampled state changes, not a complete inventory transaction history.
+
+## Required, optional, and server-only mods
+
+**Mods** has separate policy filters and a three-way selector per managed Thunderstore gameplay package:
+
+- **Required:** included in every managed client profile. Its dependencies are also mandatory, regardless of their requested policy. The dashboard identifies which required package promoted a dependency.
+- **Optional:** offered to players, off by default. The client **F8** picker shows required packages locked and optional groups with their dependency counts. Choices persist per manager instance, not merely per world name. Opting out stages removal from the managed client tree on the next Valheim restart; personal, unmanaged mods are not removed.
+- **Server only:** not offered independently. A selected package's necessary dependencies still accompany that package.
+
+Legacy `true` / `false` settings retain their required / server-only meaning. The protected client runtime is included whenever client management is active. The runtime stages an effective schema-v1 profile so the stable preloader does not need a new optional-catalog API. Package changes require a restart; loaded DLLs are never replaced in-process.
+
+The server requires an acknowledgment of the current mandatory revision from the runtime updater. Optional choices do not alter that mandatory revision. This acknowledgment reports the client's synchronization state and is **not** cryptographic attestation of an untampered game process. Dependencies must exist, be enabled and meet the declared minimum version before they can be offered. Administrators should mark a mod optional only when that mod actually supports clients omitting it; the manager cannot make an inherently mandatory gameplay mod optional.
+
+## Configuration files
+
+Use **Files** to select a package, or **Mods → Configure → Files**. The existing structured **Settings** editor continues to mask sensitive values. The raw editor requires an explicit reveal action because full configuration files can contain credentials.
+
+The file tree is restricted to the package's tracked configuration files and its plugin-GUID/package namespaces under `BepInEx/config`. It is intentionally **not** an unrestricted host filesystem browser. Protected infrastructure, DLLs and scripts are excluded. Supported text extensions: `.cfg`, `.json`, `.yaml`, `.yml`, `.toml`, `.ini`, `.txt`, `.xml`.
+
+Create nested folders/files, read/edit text, rename files, and delete files or empty folders. Mutations use the same lock as the structured editor, atomic replacement, optimistic SHA-256 revisions, and backups for replaced/renamed/deleted files. Content is limited to 2 MiB, trees to 1,000 entries and paths to 16 segments. Traversal, absolute paths, symbolic links, binary content, invalid JSON and XML DTD/entity declarations are refused. Neither content nor secrets are written to audit records. A plugin may still write its own files; a detected concurrent write requires reloading, not overwriting the newer revision.
+
+Backups remain under the persistent manager `config-backups` directory. The workspace marks changes pending but does not restart the server automatically. Use **Mods → Apply & restart** when ready. A newly created filename must be one that the target mod actually reads; this feature does not teach mods arbitrary new configuration layouts or make raw files part of client mod synchronization.
+
+## Password restart regression
+
+Saved `server.password.enabled=false` takes precedence over a populated `SERVER_PASSWORD` environment variable. The launch argument builder now always emits `-password`, using an **explicit empty argument** when disabled, rather than omitting the option and leaving the game to choose a startup default. Passwordless launches also remain unlisted (`-public 0`).
+
+A cold-start regression test recreates the service provider against the same SQLite database and persisted Data Protection keys, with a changed non-empty environment password. It checks the saved disabled flag, explicit empty launch argument, and preservation of the previously stored password for later re-enabling. Keep `/data/manager` mounted persistently; losing that directory necessarily loses saved settings and encryption keys. A deployment where the dashboard switch itself reverts still needs its volume/configuration checked.
+
+## Validation boundaries
+
+Automated tests cover persisted policy/password behavior, exact peer IDs, viewer limits, path and symbolic-link refusal, revision conflicts, backups, cross-package ownership, dependency closure, legacy policy migration, optional opt-in/opt-out and server-scoped preferences. Runtime compilation verifies current game API references separately. Real game-client acceptance must also exercise live combat stats, movement/item changes, slow downloads, F8 selection, disconnect/reconnect and policy enforcement on a running server.

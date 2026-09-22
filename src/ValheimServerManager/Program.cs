@@ -48,6 +48,7 @@ builder.Services.AddHttpClient("thunderstore", client => { client.Timeout = Time
 builder.Services.AddHttpClient("steam", client => { client.Timeout = TimeSpan.FromSeconds(15); client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/1.0"); });
 builder.Services.AddHttpClient("manager-updates", client => { client.Timeout = TimeSpan.FromSeconds(20); client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/1.6"); });
 builder.Services.AddSingleton<ServerState>();
+builder.Services.AddSingleton<InventoryInspectionService>();
 builder.Services.AddSingleton<EventBus>();
 builder.Services.AddSingleton<AgentGateway>();
 builder.Services.AddSingleton<AuditService>();
@@ -181,6 +182,7 @@ auth.MapGet("/steam/callback", async (SteamAuthService steam, AccessListService 
 auth.MapPost("/logout", async (HttpContext context) => { await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme); return Results.NoContent(); }).RequireAuthorization().RequireAntiforgery();
 
 var api = app.MapGroup("/api/v1").RequireAuthorization();
+api.MapModFiles();
 api.MapGet("/status", (ServerState state) => Results.Ok(state.Snapshot()));
 api.MapGet("/players", (ServerState state) => Results.Ok(state.Players));
 api.MapPost("/players/{peerId:long}/kick", async (long peerId, ModerationRequest request, AgentGateway agent, ServerMessageService messages, ServerState state, AuditService audit, CancellationToken ct) =>
@@ -264,6 +266,14 @@ api.MapDelete("/access/{kind}/{*platformId}", async (string kind, string platfor
 api.MapGet("/mods", async (ManagerDbContext db) => Results.Ok(await db.InstalledMods.AsNoTracking().OrderBy(x => x.Name).ToListAsync()));
 api.MapGet("/mods/search", async (string q, ModService mods, CancellationToken ct) => Results.Ok(await mods.Search(q ?? "", ct)));
 api.MapGet("/mods/updates", (ModService mods) => Results.Ok(mods.AvailableUpdates));
+api.MapGet("/mods/client-policies", async (ClientModManifestService manifests, CancellationToken ct) => Results.Ok(await manifests.Policies(ct)));
+api.MapPost("/mods/{id:guid}/client-policy", async (Guid id, ClientPolicyMutation request, ClientModManifestService manifests, AgentGateway agent, AuditService audit, CancellationToken ct) =>
+{
+    await manifests.SetPolicy(id, request.Policy, ct);
+    await agent.PublishClientManifest(ct);
+    await audit.Write("mod.client-policy", id.ToString(), detail: request.Policy);
+    return Results.NoContent();
+}).RequireAntiforgery();
 api.MapGet("/mods/client-sync", async (ClientModManifestService manifests, CancellationToken ct) => Results.Ok(await manifests.Status(ct)));
 api.MapGet("/mods/client-manifest", async (ClientModManifestService manifests, CancellationToken ct) => Results.Text(await manifests.BuildJson(ct), "application/json"));
 api.MapGet("/mods/{id:guid}/configs", async (Guid id, ModConfigService configs, CancellationToken ct) => Results.Ok(await configs.List(id, ct)));
@@ -319,6 +329,7 @@ api.MapPut("/settings/server-characters", async (ServerCharacterSettings request
 {
     var saved = await settings.Set(request, ct);
     await agent.PublishServerCharacterSettings(ct);
+    await agent.PublishClientManifest(ct);
     await audit.Write("server-characters.settings.update", "valheim", "success",
         $"enabled={saved.Enabled};acceptFirstJoin={saved.AcceptFirstJoinProfile};rejectPreviouslyUsed={saved.RejectPreviouslyUsedCharacters};backups={saved.BackupsToKeep};clientGrace={saved.ClientGraceSeconds}");
     return Results.Ok(saved);
@@ -467,3 +478,5 @@ public sealed record ApiTokenCreate(string Name, string[] Scopes);
 public sealed record ModConfigUpdate(string File, string Revision, ModConfigValueMutation[] Values);
 public sealed record ManagerUpdateSettings(bool Automatic);
 public partial class Program { }
+
+record ClientPolicyMutation(string Policy);

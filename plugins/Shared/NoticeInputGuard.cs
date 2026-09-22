@@ -4,6 +4,8 @@ namespace ValheimServerManager.ClientSupport;
 
 internal static class NoticeInputGuard
 {
+    internal static bool ExternalModal { get; set; }
+
     internal static bool Install(Harmony harmony)
     {
         // IMGUI's ModalWindow blocks other IMGUI windows, but Valheim's menus use uGUI.
@@ -17,6 +19,6 @@ internal static class NoticeInputGuard
         return true;
     }
 
-    private static bool AllowMenuInput() => !NoticeOverlay.BlocksMenuInput;
-    private static void IncludeOurModal(ref bool __result) => __result |= NoticeOverlay.BlocksMenuInput;
+    private static bool AllowMenuInput() => !(NoticeOverlay.BlocksMenuInput || ExternalModal);
+    private static void IncludeOurModal(ref bool __result) => __result |= NoticeOverlay.BlocksMenuInput || ExternalModal;
 }
