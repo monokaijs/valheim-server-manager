@@ -64,11 +64,17 @@ public sealed class InspectionAndFilesTests
                 var settings = await service.Get();
                 Assert.False(settings.Enabled);
                 Assert.True(settings.RequireInventoryInspection);
-                await service.Set(settings with { RequireInventoryInspection = false });
+                var updated = await service.Set(settings with { RequireInventoryInspection = false });
+                Assert.True(updated.RequireInventoryInspection);
+                await using var scope = provider.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();
+                var legacy = await db.ManagerSettings.SingleAsync(item => item.Key == ServerCharacterSettingsService.InspectionRequiredKey);
+                legacy.Value = "false";
+                await db.SaveChangesAsync();
             }
             await using var restarted = Provider(root);
             var saved = await restarted.GetRequiredService<ServerCharacterSettingsService>().Get();
-            Assert.False(saved.RequireInventoryInspection);
+            Assert.True(saved.RequireInventoryInspection);
             Assert.False(saved.Enabled);
         }
         finally { Directory.Delete(root, true); }

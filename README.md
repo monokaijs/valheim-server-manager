@@ -7,7 +7,7 @@ A self-hosted Valheim control plane with a web dashboard, live server agent, ser
 - One-container Linux deployment that installs the dedicated server with SteamCMD and supervises it without access to the Docker socket.
 - React/shadcn dashboard based on the `dashboard-01` shell for status, online players, live character inspection, access lists, Thunderstore/manual mods, webhooks, safe console commands, and auditing.
 - BepInEx server agent built at startup against the exact installed Valheim assemblies.
-- Inventory inspection is required by default as an explicit server admission rule. Server-owned characters remain independently optional; disable the inspection requirement and mandatory client mods to allow vanilla clients.
+- Inventory inspection is a mandatory server admission rule. Server-owned characters remain independently optional; every player needs the Server Manager client runtime and inventory sharing enabled.
 - SQLite persistence, Steam OpenID authentication restricted to `adminlist.txt`, secure cookies, CSRF protection, login throttling, SignalR updates, signed webhook delivery, and automatic mod rollback.
 
 The server plugin identifier is `dev.creaton.valheim-server-manager`; the bundled client runtime uses `dev.creaton.valheim-server-manager.client`. Older `dev.monokai.*` configuration files are copied forward automatically on first load and retained as rollback copies.
@@ -23,7 +23,7 @@ docker compose pull
 docker compose up -d
 ```
 
-That starts a private, passwordless server with inventory-sharing admission enabled. Players need the Server Manager runtime and must enable inventory sharing to stay connected. Open port `8080` for the dashboard and UDP `2456-2458` for Valheim. Set `VSM_PUBLIC_URL` before using Steam dashboard sign-in; the authenticated Steam64 ID must appear in `adminlist.txt` as either `Steam_<id>` or the numeric ID. Put the dashboard behind HTTPS before exposing it to the internet.
+That starts a private, passwordless server with inventory-sharing admission enabled. Players need the Server Manager runtime with inventory sharing enabled to stay connected. Open port `8080` for the dashboard and UDP `2456-2458` for Valheim. Set `VSM_PUBLIC_URL` before using Steam dashboard sign-in; the authenticated Steam64 ID must appear in `adminlist.txt` as either `Steam_<id>` or the numeric ID. Put the dashboard behind HTTPS before exposing it to the internet.
 
 The first start takes several minutes because it downloads Valheim, installs BepInEx, and compiles both plugins. Game, world, manager, log, and BepInEx data live in named Docker volumes.
 
@@ -68,12 +68,9 @@ The Server Manager client plugin checks installed package metadata in the active
 
 The client runtime is bundled with the Server Manager package and updated by the external mod manager. The server sends package identities and versions over the game RPC; it sends no download URLs or package archives. Manual ZIP uploads and protected infrastructure remain server-only. Older profiles that received bootstrap-installed packages should be recreated in an external mod manager because the read-only client does not remove those files.
 
-Under **Settings → Server → Client compatibility**, inventory inspection is required by default and server-owned characters are independently optional. The mod allowlist requires the Server Manager client runtime even when no gameplay mods are mandatory. The same defaults are configurable before first start:
-
-The server holds world data for the mod allowlist check even when server-owned characters are disabled. Optional notices and telemetry do not delay admission.
+Under **Settings → Server → Client compatibility**, inventory inspection is mandatory and server-owned characters are independently optional. Every player needs the Server Manager client runtime. Inventory inspection is enforced after the client handshake grace period. Server-owned characters and mandatory gameplay mods can add their own connection requirements. Other character settings remain configurable before first start:
 
 ```env
-VSM_REQUIRE_INVENTORY_INSPECTION=true
 VSM_SERVER_CHARACTERS_ENABLED=false
 VSM_SERVER_CHARACTERS_ACCEPT_FIRST_JOIN=true
 VSM_SERVER_CHARACTERS_REJECT_USED=false
@@ -81,7 +78,7 @@ VSM_SERVER_CHARACTERS_BACKUPS=10
 VSM_CLIENT_MOD_GRACE_SECONDS=20
 ```
 
-Players explicitly grant inventory sharing below. A server requiring inspection rejects players who decline after its grace period; it does not rewrite their privacy settings. Detailed telemetry remains independently optional:
+New client installs enable inventory sharing by default. Players with an existing `AllowInventoryInspection = false` setting must enable it to join; the server rejects clients that decline after the grace period. Detailed telemetry remains independently optional:
 
 ```ini
 [Privacy]
@@ -126,7 +123,7 @@ Kick and online-ban actions in the Players page accept an optional reason. Compa
 
 Client notices adapt to their purpose. Welcome messages wait until the character is ready and appear briefly in the lower-right corner. Kick, ban, access, character, and missing-mod errors remain available at the menu until dismissed, with a copy-message action. The bundled client runtime displays these notices during connection and while playing. The Messages editor previews the wording and checks length and line limits before saving.
 
-VSM adds no character-negotiation delay when server-owned characters are disabled. A server that requires managed characters explicitly tells the client to wait; invalid or timed-out profiles stop the connection with an actionable notice. Inventory inspection caches icons and spreads new icon rendering across frames. See [the client experience review](docs/client-experience-review.md) for implementation details, verified behavior, and gameplay checks.
+VSM no longer adds a character-negotiation delay when server-owned characters are disabled. A server that requires managed characters explicitly tells the client to wait; invalid or timed-out profiles stop the connection with an actionable notice. Inventory inspection caches icons and spreads new icon rendering across frames. See [the client experience review](docs/client-experience-review.md) for implementation details, verified behavior, and gameplay checks.
 
 ## Mods
 

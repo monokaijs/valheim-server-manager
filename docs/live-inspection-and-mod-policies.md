@@ -2,11 +2,11 @@
 
 ## Admission and rollout
 
-`VSM_REQUIRE_INVENTORY_INSPECTION=true` is the initial default. The saved dashboard setting takes precedence after an administrator changes it. This rule is independent of server-owned character saves: disabling server characters does not disable inspection enforcement. Deploying this release with the default enabled changes admission for existing vanilla clients.
+Inventory inspection is mandatory for every player. Older saved settings and the former `VSM_REQUIRE_INVENTORY_INSPECTION` environment variable no longer disable it. This rule is independent of server-owned character saves. Vanilla clients cannot join.
 
-Players need the Server Manager package and `Privacy > AllowInventoryInspection=true` in the client runtime. They receive an explicit disclosure of live, read-only administrator access. The server rejects missing runtimes and refused sharing after the configured grace period; it does **not** silently rewrite a player's privacy preference. Changing the policy gives connected players a new grace period without changing their actual connection timestamp.
+Players need the Server Manager package and `Privacy > AllowInventoryInspection=true` in the client runtime. New installs default this setting to true; existing false settings remain an explicit refusal. Players receive a disclosure of live, read-only administrator access. The server rejects missing runtimes and refused sharing after the configured grace period; it does **not** silently rewrite a player's privacy preference.
 
-Administrators can disable the inspection requirement in **Settings → Client compatibility**. The mod allowlist still requires the Server Manager client runtime, even with no required gameplay mods. A client can lie about reported state: these controls are admission and operational inspection, not tamper-proof anti-cheat or authoritative inventory accounting.
+A client can lie about reported state: these controls are admission and operational inspection, not tamper-proof anti-cheat or authoritative inventory accounting.
 
 ## Live inspection
 

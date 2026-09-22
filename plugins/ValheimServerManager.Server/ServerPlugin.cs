@@ -64,7 +64,6 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private ConfigEntry<string> _managerUrl;
     private ConfigEntry<string> _agentToken;
     private ConfigEntry<bool> _serverCharactersEnabled;
-    private ConfigEntry<bool> _requireInventoryInspection;
     private readonly HashSet<long> _inspectionEnforcementHandled = new();
     private ConfigEntry<bool> _acceptFirstJoinProfile;
     private ConfigEntry<bool> _rejectPreviouslyUsedCharacters;
@@ -85,8 +84,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         MigrateLegacyConfig();
         _managerUrl = Config.Bind("Connection", "ManagerUrl", Environment.GetEnvironmentVariable("VSM_AGENT_URL") ?? "ws://127.0.0.1:8080/internal/agent", "Loopback manager WebSocket URL.");
         _agentToken = Config.Bind("Connection", "AgentToken", "", "Shared manager token; the VSM_AGENT_TOKEN environment variable takes precedence and is not persisted.");
-        _requireInventoryInspection = Config.Bind("Inspection", "Required", true, "Require the client runtime and inventory sharing to remain connected. Players receive an explicit disclosure; local privacy settings are never rewritten.");
-        _serverCharactersEnabled = Config.Bind("ServerCharacters", "Enabled", false, "Make the server copy of each native Valheim character authoritative. When disabled, players without mods can join normally.");
+        _serverCharactersEnabled = Config.Bind("ServerCharacters", "Enabled", false, "Make the server copy of each native Valheim character authoritative. The Server Manager client runtime and inventory sharing are required independently.");
         _acceptFirstJoinProfile = Config.Bind("ServerCharacters", "AcceptFirstJoinProfile", true, "Allow a character without a server save to seed its first server-owned profile. Disable after migration for a closed realm.");
         _rejectPreviouslyUsedCharacters = Config.Bind("ServerCharacters", "RejectPreviouslyUsedCharacters", false, "When accepting a first-join profile, require a character that has never entered another world or server.");
         _characterBackups = Config.Bind("ServerCharacters", "BackupsToKeep", 10, new ConfigDescription("Rolling native profile backups per character.", new AcceptableValueRange<int>(1, 50)));
@@ -158,7 +156,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
             SendServerCharacter(peerId);
         }
         if (_serverCharactersEnabled.Value) EnforceServerCharacterClients();
-        if (_requireInventoryInspection.Value) EnforceInventoryInspection();
+        EnforceInventoryInspection();
         EnforceRequiredMods();
     }
 
@@ -347,15 +345,13 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private void ApplyServerCharacterSettings(JObject payload)
     {
         if (payload == null) return;
-        if (payload["requireInventoryInspection"]?.Type == JTokenType.Boolean)
-            _requireInventoryInspection.Value = (bool)payload["requireInventoryInspection"];
         _inspectionEnforcementHandled.Clear();
         foreach (var scheduled in _scheduledKicks.Where(item => item.Value.InspectionRequirement).Select(item => item.Key).ToArray())
             _scheduledKicks.Remove(scheduled);
         foreach (var peer in ZNet.instance?.GetPeers() ?? new List<ZNetPeer>())
         {
             // A changed policy gets a fresh grace period, including already connected players.
-            InvokePeer(peer, "VSM_InspectionPolicy", _requireInventoryInspection.Value);
+            InvokePeer(peer, "VSM_InspectionPolicy", true);
         }
         if (payload["enabled"]?.Type == JTokenType.Boolean)
             _serverCharactersEnabled.Value = (bool)payload["enabled"];
@@ -654,7 +650,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         if (characterCapable) _serverCharacterClients.Add(sender);
         else _serverCharacterClients.Remove(sender);
         InvokePeer(peer, "VSM_ServerPolicy", _serverCharactersEnabled.Value, _clientGraceSeconds.Value);
-        InvokePeer(peer, "VSM_InspectionPolicy", _requireInventoryInspection.Value);
+        InvokePeer(peer, "VSM_InspectionPolicy", true);
         if (inventoryAllowed)
         {
             _inspectionEnforcementHandled.Remove(sender);

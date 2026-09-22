@@ -10,4 +10,4 @@ The BepInEx plugin ID is `dev.creaton.valheim-server-manager.client`.
 
 ## Privacy
 
-Inventory inspection and detailed telemetry are disabled until the player opts in. Servers can require inventory inspection or server-owned characters for admission; the client does not silently change player privacy settings.
+Inventory inspection is enabled by default for new installs and required to join Server Manager realms. An existing disabled setting remains a refusal, and the server rejects that client after the handshake grace period. Detailed telemetry remains opt-in.

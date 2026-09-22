@@ -34,7 +34,7 @@ public sealed class ServerCharacterSettingsService(IServiceScopeFactory scopes, 
             Read(values, RejectUsedKey, configuration.GetValue("VSM_SERVER_CHARACTERS_REJECT_USED", false)),
             Read(values, BackupsKey, configuration.GetValue("VSM_SERVER_CHARACTERS_BACKUPS", 10), 1, 50),
             Read(values, ClientGraceKey, configuration.GetValue("VSM_CLIENT_MOD_GRACE_SECONDS", 20), 5, 120),
-            Read(values, InspectionRequiredKey, configuration.GetValue("VSM_REQUIRE_INVENTORY_INSPECTION", true)));
+            true);
     }
 
     public async Task<ServerCharacterSettings> Set(ServerCharacterSettings settings, CancellationToken cancellationToken = default)
@@ -44,13 +44,13 @@ public sealed class ServerCharacterSettingsService(IServiceScopeFactory scopes, 
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();
         await Put(db, EnabledKey, settings.Enabled, cancellationToken);
-        await Put(db, InspectionRequiredKey, settings.RequireInventoryInspection, cancellationToken);
+        await Put(db, InspectionRequiredKey, true, cancellationToken);
         await Put(db, AcceptKey, settings.AcceptFirstJoinProfile, cancellationToken);
         await Put(db, RejectUsedKey, settings.RejectPreviouslyUsedCharacters, cancellationToken);
         await Put(db, BackupsKey, settings.BackupsToKeep, cancellationToken);
         await Put(db, ClientGraceKey, settings.ClientGraceSeconds, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
-        return settings;
+        return settings with { RequireInventoryInspection = true };
     }
 
     public async Task<object> Payload(CancellationToken cancellationToken = default)

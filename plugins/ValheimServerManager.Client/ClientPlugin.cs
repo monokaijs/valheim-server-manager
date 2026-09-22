@@ -58,7 +58,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         }
         Instance = this;
         MigrateLegacyConfig();
-        _allowInventory = Config.Bind("Privacy", "AllowInventoryInspection", false, "Allow the connected server's authenticated administrators to inspect current stats and inventory, including a live view. Some realms require this permission to join.");
+        _allowInventory = Config.Bind("Privacy", "AllowInventoryInspection", true, "Allow the connected server's authenticated administrators to inspect current stats and inventory, including a live view. Required to join Server Manager realms.");
         _allowTelemetry = Config.Bind("Privacy", "AllowDetailedTelemetry", false, "Share death and biome events with the connected server.");
         _enableServerCharacters = Config.Bind("ServerCharacters", "Enabled", true, "Allow this server to make its native character profile authoritative for this session.");
         if (!NoticeInputGuard.Install(new Harmony(PluginGuid))) Logger.LogWarning("The game menu input guard is unavailable on this Valheim build.");
@@ -68,7 +68,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         Harmony.CreateAndPatchAll(typeof(FindSpawnPointPatch), PluginGuid);
         Harmony.CreateAndPatchAll(typeof(ProfileSavePatch), PluginGuid);
         Harmony.CreateAndPatchAll(typeof(ConnectionNoticePatch), PluginGuid);
-        Logger.LogInfo("VSM client component loaded. Inventory and detailed telemetry are disabled until opted in.");
+        Logger.LogInfo("VSM client component loaded. Inventory inspection is enabled by default; detailed telemetry remains opt-in.");
     }
 
     private void MigrateLegacyConfig()

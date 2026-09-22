@@ -497,7 +497,7 @@ public sealed class CoreTests
         Assert.False(packages[0].TryGetProperty("contentBase64", out _));
         Assert.False(packages[0].TryGetProperty("sha256", out _));
         Assert.Equal(64, initial.RootElement.GetProperty("revision").GetString()!.Length);
-        Assert.False(initial.RootElement.GetProperty("inventoryInspectionRequired").GetBoolean());
+        Assert.True(initial.RootElement.GetProperty("inventoryInspectionRequired").GetBoolean());
 
         Guid modId;
         await using (var scope = provider.CreateAsyncScope())

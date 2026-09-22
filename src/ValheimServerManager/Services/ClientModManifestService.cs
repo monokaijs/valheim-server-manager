@@ -8,7 +8,7 @@ namespace ValheimServerManager.Services;
 
 public sealed record ClientModPolicy(string Policy, string Effective, IReadOnlyList<string> RequiredBy);
 
-public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfiguration configuration)
+public sealed class ClientModManifestService(IServiceScopeFactory scopes)
 {
     private const string SettingPrefix = "client-mod-sync:";
     private const string InstanceKey = SettingPrefix + "instance-id";
@@ -28,8 +28,6 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
             var requiredRoots = enabled.Where(mod => ReadPolicy(mod, settings) == "required").ToArray();
             var required = Closure(requiredRoots, mods);
             var optional = enabled.Where(mod => ReadPolicy(mod, settings) == "optional" && !required.Any(item => item.Id == mod.Id)).ToArray();
-            var inspection = ReadBool(settings, ServerCharacterSettingsService.InspectionRequiredKey, configuration.GetValue("VSM_REQUIRE_INVENTORY_INSPECTION", true));
-
             if (!settings.TryGetValue(InstanceKey, out var instanceId) || !Guid.TryParse(instanceId, out _))
             {
                 instanceId = Guid.NewGuid().ToString("N");
@@ -51,7 +49,7 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
             {
                 schemaVersion = 2, manifestId, revision, generatedAt = DateTimeOffset.UtcNow,
                 packages, optionalGroups = groups, optionalRevision,
-                requiredReceipt = true, inventoryInspectionRequired = inspection
+                requiredReceipt = true, inventoryInspectionRequired = true
             }, JsonOptions);
         }
         finally { _gate.Release(); }
@@ -134,10 +132,8 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
         $"{mod.Namespace}-{mod.Name}-{mod.Version}", mod.Namespace, mod.Name, mod.Version);
 
     private static Task<Dictionary<string, string>> Settings(ManagerDbContext db, CancellationToken ct) => db.ManagerSettings.AsNoTracking()
-        .Where(setting => setting.Key.StartsWith(SettingPrefix) || setting.Key == ServerCharacterSettingsService.InspectionRequiredKey)
+        .Where(setting => setting.Key.StartsWith(SettingPrefix))
         .ToDictionaryAsync(setting => setting.Key, setting => setting.Value, ct);
-    private static bool ReadBool(IReadOnlyDictionary<string, string> settings, string key, bool fallback) =>
-        settings.TryGetValue(key, out var value) && bool.TryParse(value, out var flag) ? flag : fallback;
     internal static string ReadPolicy(InstalledMod mod, IReadOnlyDictionary<string, string> settings)
     {
         if (!CanSynchronize(mod)) return "serverOnly";

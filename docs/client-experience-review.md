@@ -4,7 +4,7 @@
 
 | Area | Finding | Change |
 | --- | --- | --- |
-| Joining | Every client with server characters enabled locally waited up to 20 seconds, even on vanilla-compatible servers. | Only an explicit server-character policy blocks spawn. Capability messages stop after acknowledgment or three attempts. Existing early profile responses remain compatible. |
+| Joining | Every client with server characters enabled locally waited up to 20 seconds, even when server-owned characters were disabled. | Only an explicit server-character policy blocks spawn. Capability messages stop after acknowledgment or three attempts. Existing early profile responses remain compatible. |
 | Character errors | Loading messages were no-ops. A failed profile write could be retried every frame and leave the player waiting indefinitely. | Profile errors clear pending work, block unsafe profile saves, disconnect, and show the next step. A bounded character handshake fails closed rather than falling back to a local character on a managed server. Duplicate profile responses cannot replace a live character. |
 | Reconnecting | Routed RPC registration and biome state could carry across network sessions. | Registration follows the current router. Direct callbacks verify the current server RPC; reconnect clears transient state, inventory work, and icon caches. |
 | Important notices | A center HUD message could disappear before the player reached the menu. | The bundled client notice panel keeps access and moderation messages visible until dismissed, with a copy-message action. |
