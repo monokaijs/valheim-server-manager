@@ -50,7 +50,7 @@ if [[ ! -f /data/server/BepInEx/core/BepInEx.dll ]]; then
   rm -rf "$work"
 fi
 
-vsm_version="2.1.1"
+vsm_version="2.1.2"
 mkdir -p /data/server/BepInEx/plugins/ValheimServerManager /data/manager/downloads /data/manager/runtime
 dotnet build /app/plugins/ValheimServerManager.Server/ValheimServerManager.Server.csproj -c Release \
   -p:ValheimManaged=/data/server/valheim_server_Data/Managed -p:BepInExRoot=/data/server/BepInEx \
