@@ -18,8 +18,13 @@ public sealed class ModService(
     AuditService audit,
     IConfiguration config)
 {
+    internal const string BepInExNamespace = "denikson";
+    internal const string BepInExPackage = "BepInExPack_Valheim";
+    internal const string ServerManagerNamespace = "Creaton";
+    internal const string ServerManagerPackage = "Server_Manager";
     private readonly string _bepInEx = config["VSM_BEPINEX_PATH"] ?? "/data/server/BepInEx";
     private readonly string _managerData = config["VSM_DATA_PATH"] ?? "/data/manager";
+    private readonly string _bepInExPackVersion = config["BEPINEX_PACK_VERSION"] ?? "5.4.2350";
     private string RollbackRoot => Path.Combine(_managerData, "pending-mod-rollback");
     private readonly SemaphoreSlim _gate = new(1, 1);
     private List<ThunderstorePackage>? _catalog;
@@ -31,7 +36,8 @@ public sealed class ModService(
     public async Task<IReadOnlyList<object>> Search(string query, CancellationToken cancellationToken)
     {
         var catalog = await Catalog(cancellationToken);
-        return catalog.Where(x => !x.IsDeprecated && (x.FullName.Contains(query, StringComparison.OrdinalIgnoreCase) || x.Name.Contains(query, StringComparison.OrdinalIgnoreCase)))
+        return catalog.Where(x => !x.IsDeprecated && !IsBundledInfrastructure(x.Namespace, x.Name) &&
+                (x.FullName.Contains(query, StringComparison.OrdinalIgnoreCase) || x.Name.Contains(query, StringComparison.OrdinalIgnoreCase)))
             .Take(50).Select(x => (object)new
             {
                 x.Namespace,
@@ -61,13 +67,15 @@ public sealed class ModService(
 
     public async Task InstallThunderstore(string packageNamespace, string name, string version, CancellationToken cancellationToken)
     {
+        if (IsBundledInfrastructure(packageNamespace, name))
+            throw new InvalidOperationException($"{packageNamespace}/{name} is managed by the Server Manager container and cannot be installed from the mod catalog.");
         await _gate.WaitAsync(cancellationToken);
         try
         {
             await EnsureRollbackSnapshot(cancellationToken);
             var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var constraints = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            await InstallRecursive(packageNamespace, name, version, visiting, constraints, cancellationToken);
+            await InstallRecursive(packageNamespace, name, version, visiting, constraints, false, cancellationToken);
             await MarkPending(cancellationToken);
         }
         catch
@@ -102,13 +110,24 @@ public sealed class ModService(
     public async Task<InstalledMod> InstallUpload(Stream stream, string fallbackName, CancellationToken cancellationToken)
     {
         var temp = Path.Combine(Path.GetTempPath(), "vsm-upload-" + Guid.NewGuid().ToString("N") + ".zip");
+        var stagingStarted = false;
         await _gate.WaitAsync(cancellationToken);
         try
         {
             await using (var file = File.Create(temp)) await stream.CopyToAsync(file, cancellationToken);
             if (new FileInfo(temp).Length > 512L * 1024 * 1024) throw new InvalidDataException("Package exceeds the 512 MiB limit.");
             var manifest = await ReadManifest(temp, fallbackName, cancellationToken);
+            if (IsBundledInfrastructure("", manifest.Name))
+                throw new InvalidOperationException($"{manifest.Name} is managed by the Server Manager container and cannot be installed as a mod.");
             await EnsureRollbackSnapshot(cancellationToken);
+            stagingStarted = true;
+            var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var constraints = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var dependency in manifest.Dependencies)
+            {
+                var coordinate = ParseDependency(dependency);
+                await InstallRecursive(coordinate.Namespace, coordinate.Name, coordinate.Version, visiting, constraints, true, cancellationToken);
+            }
             var installed = await InstallArchive(temp, "manual", manifest.Name, manifest.VersionNumber, manifest.Dependencies, "manual", cancellationToken);
             await MarkPending(cancellationToken);
             await audit.Write("mod.install", $"manual/{manifest.Name}@{manifest.VersionNumber}");
@@ -116,7 +135,7 @@ public sealed class ModService(
         }
         catch
         {
-            await RollbackStaging(cancellationToken);
+            if (stagingStarted) await RollbackStaging(cancellationToken);
             throw;
         }
         finally
@@ -228,9 +247,17 @@ public sealed class ModService(
         }
     }
 
-    private async Task InstallRecursive(string packageNamespace, string name, string version, HashSet<string> visiting, Dictionary<string, string> constraints, CancellationToken cancellationToken)
+    private async Task InstallRecursive(string packageNamespace, string name, string version, HashSet<string> visiting, Dictionary<string, string> constraints, bool isDependency, CancellationToken cancellationToken)
     {
         var packageKey = $"{packageNamespace}/{name}";
+        if (IsBundledInfrastructure(packageNamespace, name))
+        {
+            if (!isDependency)
+                throw new InvalidOperationException($"{packageKey} is managed by the Server Manager container and cannot be installed from the mod catalog.");
+            if (IsBepInEx(packageNamespace, name) && !VersionAtLeast(_bepInExPackVersion, version))
+                throw new InvalidOperationException($"{packageKey} {version} is required, but this container bundles older version {_bepInExPackVersion}. Update the Server Manager image first.");
+            return;
+        }
         if (constraints.TryGetValue(packageKey, out var requiredVersion) && !requiredVersion.Equals(version, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException($"Dependency conflict: {packageKey} requires both {requiredVersion} and {version}.");
         constraints[packageKey] = version;
@@ -241,9 +268,8 @@ public sealed class ModService(
         var packageVersion = package.Versions.FirstOrDefault(x => x.VersionNumber == version) ?? throw new KeyNotFoundException($"Version {version} was not found.");
         foreach (var dependency in packageVersion.Dependencies)
         {
-            var parts = dependency.Split('-');
-            if (parts.Length < 3) throw new InvalidDataException("Invalid dependency string: " + dependency);
-            await InstallRecursive(string.Join('-', parts[..^2]), parts[^2], parts[^1], visiting, constraints, cancellationToken);
+            var coordinate = ParseDependency(dependency);
+            await InstallRecursive(coordinate.Namespace, coordinate.Name, coordinate.Version, visiting, constraints, true, cancellationToken);
         }
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();
@@ -260,6 +286,27 @@ public sealed class ModService(
         }
         finally { if (File.Exists(temp)) File.Delete(temp); visiting.Remove(key); }
     }
+
+    internal static bool IsBundledInfrastructure(string packageNamespace, string name) =>
+        IsBepInEx(packageNamespace, name) ||
+        (name.Equals(ServerManagerPackage, StringComparison.OrdinalIgnoreCase) &&
+         (string.IsNullOrWhiteSpace(packageNamespace) || packageNamespace.Equals(ServerManagerNamespace, StringComparison.OrdinalIgnoreCase)));
+
+    internal static bool VersionAtLeast(string installed, string required) =>
+        Version.TryParse(installed, out var installedVersion) && Version.TryParse(required, out var requiredVersion)
+            ? installedVersion >= requiredVersion
+            : installed.Equals(required, StringComparison.OrdinalIgnoreCase);
+
+    internal static (string Namespace, string Name, string Version) ParseDependency(string dependency)
+    {
+        var parts = dependency.Split('-');
+        if (parts.Length < 3 || parts.Any(string.IsNullOrWhiteSpace)) throw new InvalidDataException("Invalid dependency string: " + dependency);
+        return (string.Join('-', parts[..^2]), parts[^2], parts[^1]);
+    }
+
+    private static bool IsBepInEx(string packageNamespace, string name) =>
+        name.Equals(BepInExPackage, StringComparison.OrdinalIgnoreCase) &&
+        (string.IsNullOrWhiteSpace(packageNamespace) || packageNamespace.Equals(BepInExNamespace, StringComparison.OrdinalIgnoreCase));
 
     private async Task<InstalledMod> InstallArchive(string archivePath, string packageNamespace, string name, string version, string[] dependencies, string source, CancellationToken cancellationToken)
     {

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 mkdir -p /data/server /data/worlds /data/manager /data/logs /opt/steamcmd
+bepinex_pack_version="${BEPINEX_PACK_VERSION:-5.4.2350}"
 
 if [[ -z "${VSM_AGENT_TOKEN:-}" ]]; then
   if [[ -f /data/manager/agent-token ]]; then
@@ -38,12 +39,12 @@ if [[ ! -x /opt/steamcmd/steamcmd.sh ]]; then
 fi
 
 if [[ "${VSM_UPDATE_ON_START:-true}" == "true" || ! -x /data/server/valheim_server.x86_64 ]]; then
-  /opt/steamcmd/steamcmd.sh +force_install_dir /data/server +login anonymous +app_update 896660 validate +quit
+  /opt/steamcmd/steamcmd.sh +force_install_dir /data/server +login anonymous +app_update 896660 +quit
 fi
 
 if [[ ! -f /data/server/BepInEx/core/BepInEx.dll ]]; then
   work="$(mktemp -d)"
-  curl -fsSL "https://thunderstore.io/package/download/denikson/BepInExPack_Valheim/${BEPINEX_PACK_VERSION:-5.4.2350}/" -o "$work/bepinex.zip"
+  curl -fsSL "https://thunderstore.io/package/download/denikson/BepInExPack_Valheim/$bepinex_pack_version/" -o "$work/bepinex.zip"
   unzip -q "$work/bepinex.zip" -d "$work/unpacked"
   cp -a "$work/unpacked/BepInExPack_Valheim/." /data/server/
   rm -rf "$work"
@@ -73,7 +74,7 @@ cp /tmp/vsm-runtime/ValheimServerManagerRuntimeUpdater.dll "$package/BepInEx/plu
 cp /data/server/BepInEx/plugins/ValheimServerManager/ValheimServerManager.Server.dll \
   /data/server/BepInEx/plugins/ValheimServerManager/Newtonsoft.Json.dll \
   "$package/BepInEx/plugins/ValheimServerManager.Server/"
-printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"One Server Manager package for dedicated servers and players, with automatic server-specific client synchronization.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-5.4.2350\"]}" >"$package/manifest.json"
+printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"One Server Manager package for dedicated servers and players, with automatic server-specific client synchronization.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-$bepinex_pack_version\"]}" >"$package/manifest.json"
 printf '%s\n' '# Valheim Server Manager' '' 'Install this single package. On a dedicated server it runs the management agent; on a player client it receives and safely stages the exact client runtime and required mods selected by that server.' >"$package/README.md"
 python3 /app/plugins/make_icon.py "$package/icon.png"
 rm -f /data/manager/downloads/ValheimServerManagerClient-*.zip /data/manager/downloads/ValheimServerManagerServer-*.zip /data/manager/downloads/XomNghien-ServerModBootstrap-*.zip
@@ -85,7 +86,7 @@ mkdir -p "$client_runtime/BepInEx/plugins/ValheimServerManager"
 cp /tmp/vsm-client/ValheimServerManager.Client.dll /tmp/vsm-client/Newtonsoft.Json.dll \
   /tmp/vsm-runtime/ValheimServerManagerRuntimeUpdater.dll \
   "$client_runtime/BepInEx/plugins/ValheimServerManager/"
-printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"Valheim Server Manager client runtime.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-5.4.2350\"]}" >"$client_runtime/manifest.json"
+printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"Valheim Server Manager client runtime.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-$bepinex_pack_version\"]}" >"$client_runtime/manifest.json"
 printf '%s\n' '# Valheim Server Manager runtime' '' 'This client-targeted runtime is managed automatically by the installed Server Manager package.' >"$client_runtime/README.md"
 python3 /app/plugins/make_icon.py "$client_runtime/icon.png"
 rm -f /data/manager/runtime/ValheimServerManager-*-client.zip

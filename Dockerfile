@@ -22,7 +22,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     VSM_LOG_PATH=/data/logs \
     VSM_SERVER_EXECUTABLE=/data/server/valheim_server.x86_64 \
     VSM_SERVER_WORKDIR=/data/server \
-    VSM_AGENT_URL=ws://127.0.0.1:8080/internal/agent
+    VSM_AGENT_URL=ws://127.0.0.1:8080/internal/agent \
+    BEPINEX_PACK_VERSION=5.4.2350
 RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl zip unzip tar libatomic1 libpulse0 libpulse-dev libc6-i386 lib32gcc-s1 lib32stdc++6 python3 procps \
     && rm -rf /var/lib/apt/lists/*

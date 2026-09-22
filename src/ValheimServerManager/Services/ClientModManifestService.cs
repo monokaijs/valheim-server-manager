@@ -9,6 +9,7 @@ namespace ValheimServerManager.Services;
 public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfiguration configuration)
 {
     private const string SettingPrefix = "client-mod-sync:";
+    private const string ServerCharactersEnabledSetting = "server-characters.enabled";
     private const string RuntimeCoordinate = "Creaton-Server_Manager-2.1.1";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _dataPath = configuration["VSM_DATA_PATH"] ?? "/data/manager";
@@ -22,13 +23,19 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
             .OrderBy(mod => mod.Namespace).ThenBy(mod => mod.Name)
             .ToListAsync(cancellationToken);
         var settings = await db.ManagerSettings.AsNoTracking()
-            .Where(setting => setting.Key.StartsWith(SettingPrefix))
+            .Where(setting => setting.Key.StartsWith(SettingPrefix) || setting.Key == ServerCharactersEnabledSetting)
             .ToDictionaryAsync(setting => setting.Key, setting => setting.Value, cancellationToken);
 
+        var requiredMods = mods
+            .Where(mod => !IsBootstrapInfrastructure(mod) && IsClientRequired(mod, settings))
+            .ToList();
+        var serverCharactersEnabled = settings.TryGetValue(ServerCharactersEnabledSetting, out var enabled)
+            && enabled.Equals("true", StringComparison.OrdinalIgnoreCase);
+        if (!serverCharactersEnabled && requiredMods.Count == 0) return "";
+
         var packages = new List<ClientManifestPackage> { await Runtime(cancellationToken) };
-        foreach (var mod in mods)
+        foreach (var mod in requiredMods)
         {
-            if (IsBootstrapInfrastructure(mod) || !IsClientRequired(mod, settings)) continue;
             packages.Add(new ClientManifestPackage(
                 $"{mod.Namespace}-{mod.Name}-{mod.Version}",
                 mod.Namespace,

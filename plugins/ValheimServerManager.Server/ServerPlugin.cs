@@ -202,12 +202,17 @@ public sealed class ServerPlugin : BaseUnityPlugin
             if ((string)message["type"] == "clientModManifest")
             {
                 var manifest = (string)message["payload"]?["json"] ?? "";
-                if (manifest.Length > 0 && Encoding.UTF8.GetByteCount(manifest) <= 8 * 1024 * 1024)
+                if (manifest.Length == 0)
+                {
+                    _clientModManifest = null;
+                    Logger.LogInfo("Client mod synchronization is inactive; no client manifest will be relayed.");
+                }
+                else if (Encoding.UTF8.GetByteCount(manifest) <= 8 * 1024 * 1024)
                 {
                     _clientModManifest = manifest;
                     Logger.LogInfo($"Loaded client mod manifest ({manifest.Length} characters).");
                 }
-                else Logger.LogWarning("Rejected an empty or oversized client mod manifest from the manager.");
+                else Logger.LogWarning("Rejected an oversized client mod manifest from the manager.");
                 continue;
             }
             if ((string)message["type"] == "serverMessages")

@@ -88,6 +88,39 @@ public sealed class CoreTests
     }
 
     [Theory]
+    [InlineData("denikson", "BepInExPack_Valheim", true)]
+    [InlineData("DENIKSON", "bepinexpack_valheim", true)]
+    [InlineData("", "BepInExPack_Valheim", true)]
+    [InlineData("Creaton", "Server_Manager", true)]
+    [InlineData("SomeAuthor", "Server_Manager", false)]
+    [InlineData("Author", "GameplayMod", false)]
+    public void ModInstaller_RecognizesContainerManagedPackages(string packageNamespace, string name, bool expected)
+    {
+        Assert.Equal(expected, ModService.IsBundledInfrastructure(packageNamespace, name));
+    }
+
+    [Theory]
+    [InlineData("5.4.2350", "5.4.2202", true)]
+    [InlineData("5.4.2350", "5.4.2350", true)]
+    [InlineData("5.4.2202", "5.4.2350", false)]
+    [InlineData("custom", "custom", true)]
+    [InlineData("custom", "other", false)]
+    public void ModInstaller_ValidatesBundledDependencyVersions(string installed, string required, bool expected)
+    {
+        Assert.Equal(expected, ModService.VersionAtLeast(installed, required));
+    }
+
+    [Fact]
+    public void ModInstaller_ParsesThunderstoreDependencyCoordinates()
+    {
+        var dependency = ModService.ParseDependency("some-author-Useful_Mod-1.2.3");
+        Assert.Equal("some-author", dependency.Namespace);
+        Assert.Equal("Useful_Mod", dependency.Name);
+        Assert.Equal("1.2.3", dependency.Version);
+        Assert.Throws<InvalidDataException>(() => ModService.ParseDependency("missing-version"));
+    }
+
+    [Theory]
     [InlineData("Steam_76561198000000000")]
     [InlineData("PlayFab_AaBbCc123")]
     [InlineData("76561198000000000")]
@@ -400,6 +433,14 @@ public sealed class CoreTests
         await using (var scope = provider.CreateAsyncScope())
             modId = await scope.ServiceProvider.GetRequiredService<ManagerDbContext>().InstalledMods.Select(mod => mod.Id).SingleAsync();
         await service.SetRequired(modId, false);
+        Assert.Equal("", await service.BuildJson());
+
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();
+            db.ManagerSettings.Add(new ManagerSetting { Key = "server-characters.enabled", Value = "true" });
+            await db.SaveChangesAsync();
+        }
         using var serverOnly = JsonDocument.Parse(await service.BuildJson());
         Assert.Single(serverOnly.RootElement.GetProperty("packages").EnumerateArray());
         Directory.Delete(root, true);

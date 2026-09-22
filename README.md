@@ -127,7 +127,7 @@ VSM no longer adds a character-negotiation delay to vanilla connections. A serve
 
 ## Mods
 
-Thunderstore installs pin exact versions and dependencies. Manual uploads must use the Thunderstore package layout with a root `manifest.json` and files under `BepInEx/`. Uploads reject traversal paths, symlinks, oversized archives, managed collisions, and unmanaged overwrites.
+Thunderstore installs pin exact versions and dependencies. The container-managed BepInEx pack and Server Manager package are treated as built-in infrastructure: they are hidden from catalog results, rejected as direct installs, and automatically satisfy compatible dependency declarations without overwriting live BepInEx files. Manual uploads must use the Thunderstore package layout with a root `manifest.json` and files under `BepInEx/`; their declared Thunderstore dependencies are resolved too. Uploads reject traversal paths, symlinks, oversized archives, managed collisions, and unmanaged overwrites.
 
 Each managed package has a structured **Configure** editor after it has loaded once. The server agent reports BepInEx plugin GUIDs, DLL locations, and primary config paths; the manager then exposes only `.cfg` files belonging to DLLs tracked by that package. The editor preserves comments and formatting, uses optimistic revision checks, masks password/token-like values, writes atomically, retains 20 backups per file, audits changes without recording values, and supports either saving for the next restart or an immediate save-and-restart. Protected manager infrastructure and unmanaged config files remain inaccessible.
 
