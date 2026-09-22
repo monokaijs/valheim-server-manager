@@ -1,6 +1,6 @@
 # Valheim Server Manager
 
-A self-hosted Valheim control plane with a web dashboard, live server agent, server-owned characters, package management, player moderation, outbound webhooks, and a privacy-aware client runtime delivered by the same Server Manager package.
+A self-hosted Valheim control plane with a web dashboard, live server agent, server-owned characters, package management, player moderation, outbound webhooks, and a separate, privacy-aware client plugin for read-only compatibility checks.
 
 ## Included
 
@@ -56,17 +56,17 @@ POST /api/external/v1/join-requests/{requestId}/deny
 
 The registration endpoint accepts a 17-digit Steam64 ID and normalizes it to Valheim's canonical `Steam_<id>` form. Tokens can be independently scoped to `whitelist.read`, `whitelist.write`, `join-requests.read`, and `join-requests.write`; they are rate-limited, revocable, and appear in the audit log as `api-token:<name>`.
 
-## One Server Manager package
+## Server Manager client package
 
-After the first successful container start, authenticated owners give players this one package:
+Docker installs the server agent. After the first successful container start, authenticated owners can give players the separate client package:
 
 ```text
 /api/v1/downloads/plugin
 ```
 
-Install the Server Manager ZIP through r2modman/Thunderstore Mod Manager or copy its `BepInEx` directory into Valheim. The same package is safe on dedicated servers and player clients: server-only code is disabled in the client process, while the in-game installer is disabled in the dedicated-server process. On connection, server agent 2.2.1 relays a deterministic list of every enabled Thunderstore mod marked **Required** and the available **Optional** mods. The VSM client runtime ships in the Server Manager package and is updated through the mod manager. The F8 picker shows all pinned package versions and dependencies; optional groups start unchecked. Receiving this list only checks local state. The client downloads and stages packages only after the player chooses **Install selected**. Changed DLLs activate after the player restarts Valheim. There is no automatic client download or update check, and the installer refuses to replace or remove a previously installed package.
+The Server Manager client plugin displays a read-only **Server mods (F8)** compatibility view after connecting. It lists required and optional package versions, checks the active BepInEx profile, and acknowledges the required set only when exact versions are present. It cannot download, install, update, or remove client mods. Players manage their profile through an external mod manager and restart Valheim after changing packages.
 
-Server Manager installs selected gameplay packages under `BepInEx/plugins/ValheimServerManagerManaged`. Its installer DLL and client runtime are bundled in the original package; personal plugins are left alone. Manual ZIP uploads and other protected infrastructure are server-only because the manager has no stable Thunderstore source for them. The Server Manager client runtime is bundled in the original package, so its updates come through the external mod manager. The dashboard does not need to be publicly reachable. Bootstrap-installed packages can load in the active r2modman profile, but they are not registered as r2modman-managed installs; restarting r2modman will not add them to its Installed list. Use r2modman's own install flow if that list matters to you. Profiles that previously received the downloaded VSM runtime should be recreated before using the install-only version; the installer will not remove that old runtime for them.
+The client runtime is bundled with the Server Manager package and updated by the external mod manager. The server sends package identities and versions over the game RPC; it sends no download URLs or package archives. Manual ZIP uploads and protected infrastructure remain server-only. Older profiles that received bootstrap-installed packages should be recreated in an external mod manager because the read-only client does not remove those files.
 
 Under **Settings → Server → Client compatibility**, inventory inspection is required by default and server-owned characters are independently optional. Vanilla admission requires disabling the inventory requirement and removing all mandatory managed-client requirements. The same defaults are configurable before first start:
 
@@ -124,7 +124,7 @@ restart [seconds] [reason]
 
 Kick and online-ban actions in the Players page accept an optional reason. Compatible clients see the rendered notice before the delayed disconnect, and the reason is included in audit and event records. Welcome, kick, ban, restart, whitelist-rejection, and client-runtime-required templates are editable under **Settings → Messages** with a fixed allowlist of placeholders.
 
-Client notices adapt to their purpose. Welcome messages wait until the character is ready and appear briefly in the lower-right corner. Kick, ban, access, and character errors remain available at the menu until dismissed, with a copy-message action. The in-game installer can display these notices even before the full client runtime is installed. Player-requested mod downloads show progress; successful staging offers **Quit Valheim** or **Later**, while a failure explains how to retry without forcing the game to quit. The Messages editor previews the wording and checks length and line limits before saving.
+Client notices adapt to their purpose. Welcome messages wait until the character is ready and appear briefly in the lower-right corner. Kick, ban, access, and character errors remain available at the menu until dismissed, with a copy-message action. The bundled client runtime displays these notices during connection and while playing. The mod compatibility screen reads the active profile without downloading or changing files. The Messages editor previews the wording and checks length and line limits before saving.
 
 VSM no longer adds a character-negotiation delay to vanilla connections. A server that requires managed characters explicitly tells the client to wait; invalid or timed-out profiles stop the connection with an actionable notice. Inventory inspection caches icons and spreads new icon rendering across frames. See [the client experience review](docs/client-experience-review.md) for implementation details, verified behavior, and gameplay checks.
 
@@ -134,7 +134,7 @@ Thunderstore installs pin exact versions and dependencies. The container-managed
 
 Each managed package has a structured **Configure** editor after it has loaded once. The server agent reports BepInEx plugin GUIDs, DLL locations, and primary config paths; the manager then exposes only `.cfg` files belonging to DLLs tracked by that package. The editor preserves comments and formatting, uses optimistic revision checks, masks password/token-like values, writes atomically, retains 20 backups per file, audits changes without recording values, and supports either saving for the next restart or an immediate save-and-restart. Protected manager infrastructure and unrelated config files remain inaccessible. The per-mod **Files** tab and **File manager** page add scoped folder trees and text-file creation, editing, rename, and deletion for CFG, JSON, YAML, TOML, INI, TXT, and XML. Raw content is revealed explicitly, writes are revision-checked and backed up, and links/traversal/executables are rejected. See [live inspection and mod policies](docs/live-inspection-and-mod-policies.md) for admission, file namespace, compatibility, and rollout details.
 
-Enabled Thunderstore packages are client-required by default. Choose **Mandatory**, **Optional**, or **Server only** per package. Required dependencies remain mandatory even when their own selection is optional. Players review required and optional packages in the in-game **Server mods (F8)** picker; choices default off and persist per server. **Install selected** is the only client download action. Changes to loaded packages require a Valheim restart. The VSM runtime is bundled with the Server Manager package. The active client list is published only by the authenticated loopback control channel and is relayed over the joining peer's game RPC; clients do not need a dashboard URL, token, or per-server configuration.
+Enabled Thunderstore packages are client-required by default. Choose **Mandatory**, **Optional**, or **Server only** per package. Required dependencies remain mandatory even when their own policy is optional. Players review required and optional versions in the in-game **Server mods (F8)** status view. The client checks package metadata already present in the active profile and never changes files. The active client list is published only by the authenticated loopback control channel and relayed over the joining peer's game RPC; clients do not need a dashboard URL, token, or per-server configuration.
 
 Changes are staged. **Apply & restart** requests a world save, snapshots BepInEx, restarts the server, waits up to 120 seconds for the agent, and restores the snapshot if the agent does not reconnect. Mod DLLs are arbitrary native-equivalent server code; install only packages you trust.
 
@@ -194,7 +194,7 @@ The smoke stack uses its own Compose project and volumes, waits for the plugin h
 
 The **Publish Manager Release** GitHub Actions workflow creates the Git tag and GitHub Release, publishes the matching Thunderstore package, and builds the x86-64 container image. Images are published to `ghcr.io/monokaijs/valheim-server-manager` with `X.Y.Z`, `vX.Y.Z`, and `latest` tags. The GHCR package must remain public so new installations and the host updater can pull it without registry credentials.
 
-The standalone **Publish to Thunderstore** workflow can also be manually triggered from the repository's Actions page. It downloads the current Valheim dedicated-server and BepInEx references, builds the server agent with the calculated version, packages it as **Server Manager** (`Creaton-Server_Manager` on Thunderstore), and publishes it to the Valheim community. Its BepInEx plugin ID is `dev.creaton.valheim-server-manager`.
+The standalone **Publish to Thunderstore** workflow can also be manually triggered from the repository's Actions page. It downloads the current Valheim dedicated-server and BepInEx references, builds only the client plugin, packages it as **Server Manager** (`Creaton-Server_Manager` on Thunderstore), and publishes it to the Valheim community. Its BepInEx plugin ID is `dev.creaton.valheim-server-manager.client`.
 
 For the first release, the calculation starts from `thunderstore.toml`; each successful release records a `vX.Y.Z` Git tag that becomes the base for the next increment. The workflow authenticates with the repository's `THUNDERSTORE_TOKEN` Actions secret.
 

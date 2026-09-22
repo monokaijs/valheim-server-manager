@@ -17,6 +17,7 @@ public sealed partial class ServerMessageService(IServiceScopeFactory scopes, IC
 {
     private const string SettingKey = "server.message-templates";
     private const string LegacyClientRequired = "{server} requires the VSM client companion. Restart Valheim after the bootstrap finishes installing it.";
+    private const string PreviousClientRequired = "{server} requires the Server Manager client runtime. Restart Valheim after Server Manager finishes installing it.";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private readonly string _serverName = configuration["SERVER_NAME"] ?? "Valheim Server";
@@ -27,7 +28,7 @@ public sealed partial class ServerMessageService(IServiceScopeFactory scopes, IC
         "You were banned from {server}. Reason: {reason}",
         "{server} restarts in {seconds} seconds. {reason}",
         "You are not on the {server} whitelist. A join request was sent to the administrators.",
-        "{server} requires the Server Manager client runtime. Restart Valheim after Server Manager finishes installing it.");
+        "{server} requires the Server Manager client package. Install it through your external mod manager, then restart Valheim.");
 
     public async Task<ServerMessageTemplates> Get(CancellationToken cancellationToken = default)
     {
@@ -39,7 +40,7 @@ public sealed partial class ServerMessageService(IServiceScopeFactory scopes, IC
         try
         {
             var templates = Validate(JsonSerializer.Deserialize<ServerMessageTemplates>(value, JsonOptions) ?? Defaults);
-            return templates.CompanionRequired == LegacyClientRequired
+            return templates.CompanionRequired == LegacyClientRequired || templates.CompanionRequired == PreviousClientRequired
                 ? templates with { CompanionRequired = Defaults.CompanionRequired }
                 : templates;
         }

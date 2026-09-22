@@ -92,10 +92,6 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add Directory.Build.props README.md thunderstore.toml docker/entrypoint.sh \
-            plugins/ValheimServerManager.Bootstrap/ValheimServerManager.Bootstrap.csproj \
-            plugins/ValheimServerManager.Bootstrap/BootstrapSynchronizer.cs \
-            plugins/ValheimServerManager.RuntimeUpdater/ValheimServerManager.RuntimeUpdater.csproj \
-            plugins/ValheimServerManager.RuntimeUpdater/RuntimeUpdaterPlugin.cs \
             plugins/ValheimServerManager.Server/ServerPlugin.cs \
             plugins/ValheimServerManager.Client/ClientPlugin.cs \
             src/ValheimServerManager/Program.cs \

@@ -8,8 +8,8 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5"><PrivateAssets>all</PrivateAssets></PackageReference>
-    <ProjectReference Include="../../plugins/ValheimServerManager.Bootstrap/ValheimServerManager.Bootstrap.csproj" />
-    <Compile Include="../../plugins/Shared/ClientModSelection.cs" Link="ClientModSelection.cs" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <Compile Include="../../plugins/Shared/ClientModCompatibility.cs" Link="ClientModCompatibility.cs" />
     <Compile Include="../../plugins/Shared/ClientHandshake.cs" Link="ClientHandshake.cs" />
     <Compile Include="../../plugins/Shared/ClientNotice.cs" Link="ClientNotice.cs" />
     <Compile Include="../../plugins/Shared/ConnectionPolicy.cs" Link="ConnectionPolicy.cs" />

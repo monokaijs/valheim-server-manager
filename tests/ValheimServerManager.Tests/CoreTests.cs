@@ -493,7 +493,9 @@ public sealed class CoreTests
         var packages = initial.RootElement.GetProperty("packages");
         Assert.Single(packages.EnumerateArray());
         Assert.Equal("Author-GameplayMod-1.2.3", packages[0].GetProperty("coordinate").GetString());
-        Assert.Equal(JsonValueKind.Null, packages[0].GetProperty("contentBase64").ValueKind);
+        Assert.False(packages[0].TryGetProperty("downloadUrl", out _));
+        Assert.False(packages[0].TryGetProperty("contentBase64", out _));
+        Assert.False(packages[0].TryGetProperty("sha256", out _));
         Assert.Equal(64, initial.RootElement.GetProperty("revision").GetString()!.Length);
 
         Guid modId;

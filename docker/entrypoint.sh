@@ -73,29 +73,18 @@ dotnet build /app/plugins/ValheimServerManager.Client/ValheimServerManager.Clien
   -p:ValheimManaged=/data/server/valheim_server_Data/Managed -p:BepInExRoot=/data/server/BepInEx \
   -o /tmp/vsm-client >/data/logs/client-plugin-build.log
 
-dotnet build /app/plugins/ValheimServerManager.Bootstrap/ValheimServerManager.Bootstrap.csproj -c Release -f net472 \
-  -o /tmp/vsm-bootstrap >/data/logs/bootstrap-build.log
-
-dotnet build /app/plugins/ValheimServerManager.RuntimeUpdater/ValheimServerManager.RuntimeUpdater.csproj -c Release \
-  -p:ValheimManaged=/data/server/valheim_server_Data/Managed -p:BepInExRoot=/data/server/BepInEx \
-  -o /tmp/vsm-runtime >/data/logs/runtime-updater-build.log
-
 package="$(mktemp -d)"
-mkdir -p "$package/BepInEx/patchers" "$package/BepInEx/plugins/ValheimServerManager"
-cp /tmp/vsm-bootstrap/ValheimServerManagerBootstrap.dll "$package/BepInEx/patchers/"
-cp /tmp/vsm-runtime/ValheimServerManagerRuntimeUpdater.dll "$package/BepInEx/plugins/ValheimServerManager/"
+mkdir -p "$package/BepInEx/plugins/ValheimServerManager"
 cp /tmp/vsm-client/ValheimServerManager.Client.dll "$package/BepInEx/plugins/ValheimServerManager/"
-cp /data/server/BepInEx/plugins/ValheimServerManager/ValheimServerManager.Server.dll \
-  /data/server/BepInEx/plugins/ValheimServerManager/Newtonsoft.Json.dll \
-  "$package/BepInEx/plugins/ValheimServerManager/"
-printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"Server management and opt-in gameplay mod installation for players.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-$bepinex_pack_version\"]}" >"$package/manifest.json"
-printf '%s\n' '# Valheim Server Manager' '' 'Install this single package through your mod manager. The client plugin is bundled and updated through the mod manager. The in-game F8 checklist can install selected gameplay mods once; it does not update installed mods.' >"$package/README.md"
+cp /tmp/vsm-client/Newtonsoft.Json.dll "$package/BepInEx/plugins/ValheimServerManager/"
+printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"Read-only client mod compatibility and server-owned characters.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-$bepinex_pack_version\"]}" >"$package/manifest.json"
+printf '%s\n' '# Valheim Server Manager client' '' 'The Docker deployment installs the server agent. Install this client package through your external mod manager. The in-game F8 screen only checks whether this profile has the package versions required by the server; it never downloads or installs mods.' >"$package/README.md"
 python3 /app/plugins/make_icon.py "$package/icon.png"
 rm -f /data/manager/downloads/ValheimServerManagerClient-*.zip /data/manager/downloads/ValheimServerManagerServer-*.zip /data/manager/downloads/XomNghien-ServerModBootstrap-*.zip
 (cd "$package" && zip -qr "/data/manager/downloads/ValheimServerManager-$vsm_version.zip" .)
 rm -rf "$package"
 
-rm -rf /tmp/vsm-client /tmp/vsm-bootstrap /tmp/vsm-runtime
+rm -rf /tmp/vsm-client
 
 chmod +x /data/server/valheim_server.x86_64 /data/server/start_server_bepinex.sh 2>/dev/null || true
 exec dotnet /app/ValheimServerManager.dll

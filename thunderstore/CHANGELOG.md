@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Bundled the client runtime in the Server Manager package for updates through an external mod manager.
-- Added an in-game checklist for required and optional gameplay mods. Downloads require player approval, and the installer refuses to replace or remove installed packages.
+- Replaced the in-game installer and bootstrap with a read-only F8 compatibility view. It checks required and optional package versions in the active profile and never downloads or changes mods.
+- The Thunderstore ZIP now contains only the client plugin; Docker installs the server agent separately.
 
 ## 1.6.6
 

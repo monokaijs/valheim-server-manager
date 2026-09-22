@@ -46,12 +46,12 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
                 Closure([mod], mods).Select(Package).ToArray())).ToArray();
             var manifestId = "vsm:" + instanceId;
             // Optional catalog changes do not invalidate a player's mandatory-mod receipt.
-            var revision = Hash(manifestId + "\n" + string.Join("\n", packages.Select(package => $"{package.Coordinate}:{package.Sha256}")));
-            var optionalRevision = Hash(string.Join("\n", groups.Select(group => group.Id + ":" + string.Join(",", group.Packages.Select(package => package.Coordinate + ":" + package.Sha256)))));
+            var revision = Hash(manifestId + "\n" + string.Join("\n", packages.Select(package => package.Coordinate)));
+            var optionalRevision = Hash(string.Join("\n", groups.Select(group => group.Id + ":" + string.Join(",", group.Packages.Select(package => package.Coordinate)))));
             return JsonSerializer.Serialize(new
             {
                 schemaVersion = 1, manifestId, revision, generatedAt = DateTimeOffset.UtcNow,
-                packages, configs = Array.Empty<object>(), optionalGroups = groups, optionalRevision,
+                packages, optionalGroups = groups, optionalRevision,
                 requiredReceipt = packages.Count > 0, inventoryInspectionRequired = inspection
             }, JsonOptions);
         }
@@ -132,9 +132,7 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
     }
 
     private static ClientManifestPackage Package(InstalledMod mod) => new(
-        $"{mod.Namespace}-{mod.Name}-{mod.Version}", mod.Namespace, mod.Name, mod.Version,
-        $"https://thunderstore.io/package/download/{Uri.EscapeDataString(mod.Namespace)}/{Uri.EscapeDataString(mod.Name)}/{Uri.EscapeDataString(mod.Version)}/",
-        null, JsonSerializer.Deserialize<string[]>(mod.DependenciesJson, JsonOptions) ?? [], mod.Sha256, null);
+        $"{mod.Namespace}-{mod.Name}-{mod.Version}", mod.Namespace, mod.Name, mod.Version);
 
     private static Task<Dictionary<string, string>> Settings(ManagerDbContext db, CancellationToken ct) => db.ManagerSettings.AsNoTracking()
         .Where(setting => setting.Key.StartsWith(SettingPrefix) || setting.Key == ServerCharacterSettingsService.InspectionRequiredKey)
@@ -156,6 +154,5 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
         && !mod.Name.Equals("ValheimServerManagerServer", StringComparison.OrdinalIgnoreCase);
     private static string Hash(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
     private sealed record OptionalModGroup(string Id, string Name, IReadOnlyList<ClientManifestPackage> Packages);
-    private sealed record ClientManifestPackage(string Coordinate, string Namespace, string PackageName, string VersionNumber,
-        string DownloadUrl, long? FileSize, IReadOnlyList<string> Dependencies, string Sha256, string? ContentBase64);
+    private sealed record ClientManifestPackage(string Coordinate, string Namespace, string PackageName, string VersionNumber);
 }

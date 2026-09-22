@@ -22,13 +22,13 @@ Freshness uses manager reception and browser receipt times rather than trusting 
 
 **Mods** has separate policy filters and a three-way selector per managed Thunderstore gameplay package:
 
-- **Required:** included in every managed client profile. Its dependencies are also mandatory, regardless of their requested policy. The dashboard identifies which required package promoted a dependency.
-- **Optional:** offered to players, off by default. The client **F8** picker shows required packages locked and optional groups with their dependency counts. Choices persist per manager instance, not merely per world name. Opting out stages removal from the managed client tree on the next Valheim restart; personal, unmanaged mods are not removed.
-- **Server only:** not offered independently. A selected package's necessary dependencies still accompany that package.
+- **Required:** checked against every client profile. Its dependencies are also mandatory, regardless of their requested policy. The dashboard identifies which required package promoted a dependency.
+- **Optional:** displayed separately in the read-only client **F8** status view. Optional packages do not affect admission.
+- **Server only:** not checked on clients unless required as a dependency of another package.
 
-Legacy `true` / `false` settings retain their required / server-only meaning. The client runtime is bundled with the Server Manager package and updated through the external mod manager. The installer stages an effective schema-v1 profile after player approval. New gameplay packages require a restart; installed packages are never replaced by the in-game installer.
+Legacy `true` / `false` settings retain their required / server-only meaning. The client runtime is bundled with the Server Manager package and updated through the external mod manager. The client only reads package metadata in the active BepInEx profile. It cannot download or change installed packages.
 
-The server requires an acknowledgment of the current mandatory revision from the runtime updater. Optional choices do not alter that mandatory revision. This acknowledgment reports the client's synchronization state and is **not** cryptographic attestation of an untampered game process. Dependencies must exist, be enabled and meet the declared minimum version before they can be offered. Administrators should mark a mod optional only when that mod actually supports clients omitting it; the manager cannot make an inherently mandatory gameplay mod optional.
+The server requires an acknowledgment of the current mandatory revision from the client compatibility checker. Optional package changes do not alter that mandatory revision. This acknowledgment reports the client's observed package metadata and is **not** cryptographic attestation of an untampered game process. Dependencies must exist, be enabled and meet the declared minimum version before they can be offered. Administrators should mark a mod optional only when that mod actually supports clients omitting it; the manager cannot make an inherently mandatory gameplay mod optional.
 
 ## Configuration files
 

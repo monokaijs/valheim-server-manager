@@ -16,18 +16,10 @@ perl -0pi -e 's/^versionNumber = "[0-9]+\.[0-9]+\.[0-9]+"$/versionNumber = "$ENV
 
 perl -0pi -e 's/(PluginVersion = ")[0-9]+\.[0-9]+\.[0-9]+(";)/$1$ENV{RELEASE_VERSION}$2/g' \
   plugins/ValheimServerManager.Server/ServerPlugin.cs \
-  plugins/ValheimServerManager.Client/ClientPlugin.cs \
-  plugins/ValheimServerManager.RuntimeUpdater/RuntimeUpdaterPlugin.cs
-
-perl -0pi -e 's|<Version>[0-9]+\.[0-9]+\.[0-9]+</Version>|<Version>$ENV{RELEASE_VERSION}</Version>|g' \
-  plugins/ValheimServerManager.Bootstrap/ValheimServerManager.Bootstrap.csproj \
-  plugins/ValheimServerManager.RuntimeUpdater/ValheimServerManager.RuntimeUpdater.csproj
+  plugins/ValheimServerManager.Client/ClientPlugin.cs
 
 perl -0pi -e 's/(vsm_version=")[0-9]+\.[0-9]+\.[0-9]+(";?)/$1$ENV{RELEASE_VERSION}$2/g' \
   docker/entrypoint.sh
-
-perl -0pi -e 's|(ValheimServerManager/)[0-9]+\.[0-9]+\.[0-9]+|$1$ENV{RELEASE_VERSION}|g' \
-  plugins/ValheimServerManager.Bootstrap/BootstrapSynchronizer.cs
 
 perl -0pi -e 's|(ValheimServerManager-)[0-9]+\.[0-9]+\.[0-9]+(\.zip)|$1$ENV{RELEASE_VERSION}$2|g' \
   src/ValheimServerManager/Program.cs

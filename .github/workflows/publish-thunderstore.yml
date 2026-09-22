@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      build_only:
+        description: Build a review ZIP without publishing
+        required: false
+        type: boolean
+        default: false
     secrets:
       THUNDERSTORE_TOKEN:
         required: true
@@ -40,6 +45,11 @@ on:
         description: Create the matching Git tag after publishing
         required: true
         default: true
+        type: boolean
+      build_only:
+        description: Build a review ZIP without publishing
+        required: true
+        default: false
         type: boolean
 
 permissions:
@@ -157,34 +167,15 @@ jobs:
           set -euo pipefail
           perl -0pi -e \
             's/(PluginVersion = ")[0-9]+\.[0-9]+\.[0-9]+(";)/$1$ENV{RELEASE_VERSION}$2/' \
-            plugins/ValheimServerManager.Server/ServerPlugin.cs \
-            plugins/ValheimServerManager.Client/ClientPlugin.cs \
-            plugins/ValheimServerManager.RuntimeUpdater/RuntimeUpdaterPlugin.cs
-          perl -0pi -e \
-            's|<Version>[0-9]+\.[0-9]+\.[0-9]+</Version>|<Version>$ENV{RELEASE_VERSION}</Version>|' \
-            plugins/ValheimServerManager.Bootstrap/ValheimServerManager.Bootstrap.csproj \
-            plugins/ValheimServerManager.RuntimeUpdater/ValheimServerManager.RuntimeUpdater.csproj
-          mkdir -p .release/BepInEx/plugins/ServerManager .release/BepInEx/patchers .release-loader .release-updater
-          dotnet build plugins/ValheimServerManager.Server/ValheimServerManager.Server.csproj \
-            --configuration Release \
-            --property:ValheimManaged="$GITHUB_WORKSPACE/.valheim/valheim_server_Data/Managed" \
-            --property:BepInExRoot="$GITHUB_WORKSPACE/.bepinex/BepInExPack_Valheim/BepInEx" \
-            --output .release/BepInEx/plugins/ServerManager
+            plugins/ValheimServerManager.Client/ClientPlugin.cs
+          mkdir -p .release/BepInEx/plugins/ServerManager
           dotnet build plugins/ValheimServerManager.Client/ValheimServerManager.Client.csproj \
             --configuration Release \
             --property:ValheimManaged="$GITHUB_WORKSPACE/.valheim/valheim_server_Data/Managed" \
             --property:BepInExRoot="$GITHUB_WORKSPACE/.bepinex/BepInExPack_Valheim/BepInEx" \
             --output .release-client
-          dotnet build plugins/ValheimServerManager.Bootstrap/ValheimServerManager.Bootstrap.csproj \
-            --configuration Release --framework net472 --output .release-loader
-          dotnet build plugins/ValheimServerManager.RuntimeUpdater/ValheimServerManager.RuntimeUpdater.csproj \
-            --configuration Release \
-            --property:ValheimManaged="$GITHUB_WORKSPACE/.valheim/valheim_server_Data/Managed" \
-            --property:BepInExRoot="$GITHUB_WORKSPACE/.bepinex/BepInExPack_Valheim/BepInEx" \
-            --output .release-updater
-          cp .release-loader/ValheimServerManagerBootstrap.dll .release/BepInEx/patchers/
-          cp .release-updater/ValheimServerManagerRuntimeUpdater.dll .release/BepInEx/plugins/ServerManager/
           cp .release-client/ValheimServerManager.Client.dll .release/BepInEx/plugins/ServerManager/
+          cp .release-client/Newtonsoft.Json.dll .release/BepInEx/plugins/ServerManager/
           find .release -type f -name '*.pdb' -delete
           python3 plugins/make_icon.py thunderstore/icon.png
 
@@ -193,6 +184,7 @@ jobs:
         run: dotnet tool install tcli --tool-path ./.tcli --version 0.2.4
 
       - name: Publish package
+        if: ${{ !inputs.build_only }}
         env:
           TCLI_AUTH_TOKEN: ${{ secrets.THUNDERSTORE_TOKEN }}
         shell: bash
@@ -203,8 +195,20 @@ jobs:
             --config-path thunderstore.toml \
             --package-version "$RELEASE_VERSION"
 
+      - name: Build review package
+        if: ${{ inputs.build_only }}
+        shell: bash
+        run: ./.tcli/tcli build --config-path thunderstore.toml --package-version "$RELEASE_VERSION"
+
+      - name: Upload review package
+        if: ${{ inputs.build_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Server_Manager-review-${{ env.RELEASE_VERSION }}
+          path: build/Creaton-Server_Manager-${{ env.RELEASE_VERSION }}.zip
+
       - name: Record published version
-        if: ${{ inputs.create_tag }}
+        if: ${{ inputs.create_tag && !inputs.build_only }}
         shell: bash
         run: |
           set -euo pipefail

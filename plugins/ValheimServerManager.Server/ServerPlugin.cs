@@ -507,7 +507,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
                 || DateTime.UtcNow - joined < TimeSpan.FromSeconds(_clientGraceSeconds.Value)
                 || (_modReceipts.TryGetValue(peer, out var receipt) && receipt == _requiredModRevision)
                 || _scheduledKicks.ContainsKey(peer.m_uid) || !_modEnforcementHandled.Add(peer.m_uid)) continue;
-            const string reason = "This realm requires the managed mod list. Install Server Manager, let it prepare the required mods, then restart Valheim and reconnect. Optional mods are your choice and are not required for admission.";
+            const string reason = "This realm requires specific mod versions. Review Server mods (F8), manage missing packages with your external mod manager, then restart Valheim and reconnect. Optional mods are not required for admission.";
             ScheduleKick(peer, "Required mods not ready", reason, reason, "mods.client.required");
             if (_scheduledKicks.TryGetValue(peer.m_uid, out var kick)) kick.ModRequirement = true;
         }

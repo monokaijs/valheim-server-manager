@@ -10,7 +10,7 @@
     <BepInExRoot Condition="'$(BepInExRoot)' == ''">$(BEPINEX_ROOT)</BepInExRoot>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../Shared/*.cs" Exclude="../Shared/ClientModSelection.cs" Link="ClientSupport/%(Filename)%(Extension)" />
+    <Compile Include="../Shared/*.cs" Link="ClientSupport/%(Filename)%(Extension)" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
