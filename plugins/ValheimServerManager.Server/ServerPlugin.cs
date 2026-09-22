@@ -25,7 +25,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager";
     public const string PluginName = "Server Manager";
-    public const string PluginVersion = "2.1.0";
+    public const string PluginVersion = "2.2.0";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.server";
     private const string ClientManifestRpc = "ValheimServerManager_Manifest_v1";
     private const string LegacyClientManifestRpc = "ServerModBootstrap_Manifest_v1";
