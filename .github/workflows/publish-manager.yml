@@ -1,7 +1,10 @@
 name: Publish Manager Release
-run-name: Publish Manager ${{ inputs.version || inputs.bump }}
+run-name: Publish Manager ${{ inputs.version || inputs.bump || 'patch' }}
 
 on:
+  # An explicit marker starts a patch release; ordinary pushes never publish.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -24,6 +27,7 @@ concurrency:
 
 jobs:
   release:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release patch]')) }}
     name: Prepare release source
     runs-on: ubuntu-latest
     permissions:
@@ -46,7 +50,7 @@ jobs:
         id: version
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
-          VERSION_BUMP: ${{ inputs.bump }}
+          VERSION_BUMP: ${{ inputs.bump || 'patch' }}
         run: |
           set -euo pipefail
           if [[ -n "$REQUESTED_VERSION" ]]; then
@@ -72,6 +76,10 @@ jobs:
           echo "release_version=$release_version" >>"$GITHUB_OUTPUT"
       - name: Record version in release source
         run: |
+          if git rev-parse --verify --quiet "refs/tags/v${RELEASE_VERSION}" >/dev/null; then
+            echo "Release tag v${RELEASE_VERSION} already exists; choose a new version." >&2
+            exit 1
+          fi
           ./scripts/set-version.sh "$RELEASE_VERSION"
       - name: Verify control plane and dashboard
         run: |
@@ -98,7 +106,7 @@ jobs:
             git commit -m "Release manager ${RELEASE_VERSION}"
           fi
           git tag --annotate "v${RELEASE_VERSION}" --message "Valheim Server Manager ${RELEASE_VERSION}"
-          git push origin HEAD:${GITHUB_REF_NAME} "v${RELEASE_VERSION}"
+          git push --atomic origin "HEAD:${GITHUB_REF_NAME}" "v${RELEASE_VERSION}"
 
   publish-thunderstore:
     name: Publish matching Thunderstore package
