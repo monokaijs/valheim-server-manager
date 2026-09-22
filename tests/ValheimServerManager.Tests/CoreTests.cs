@@ -479,7 +479,8 @@ public sealed class CoreTests
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["VSM_DATA_PATH"] = root,
-            ["SERVER_WORLD"] = "TestWorld"
+            ["SERVER_WORLD"] = "TestWorld",
+            ["VSM_REQUIRE_INVENTORY_INSPECTION"] = "false"
         }).Build());
         services.AddSingleton<ClientModManifestService>();
         await using var provider = services.BuildServiceProvider();
@@ -498,9 +499,9 @@ public sealed class CoreTests
         var service = provider.GetRequiredService<ClientModManifestService>();
         using var initial = JsonDocument.Parse(await service.BuildJson());
         var packages = initial.RootElement.GetProperty("packages");
-        Assert.Single(packages.EnumerateArray());
-        Assert.Equal("Author-GameplayMod-1.2.3", packages[0].GetProperty("coordinate").GetString());
-        Assert.Equal(JsonValueKind.Null, packages[0].GetProperty("contentBase64").ValueKind);
+        Assert.Equal(2, packages.GetArrayLength());
+        Assert.Equal("Author-GameplayMod-1.2.3", packages[1].GetProperty("coordinate").GetString());
+        Assert.Equal(JsonValueKind.Null, packages[1].GetProperty("contentBase64").ValueKind);
         Assert.Equal(64, initial.RootElement.GetProperty("revision").GetString()!.Length);
 
         Guid modId;
@@ -569,7 +570,7 @@ public sealed class CoreTests
 
         await settings.Set(Mutation(false, null));
         var passwordless = (await settings.BuildArguments()).ToList();
-        Assert.DoesNotContain("-password", passwordless);
+        Assert.Equal("", passwordless[passwordless.IndexOf("-password") + 1]);
         Assert.Equal("0", passwordless[passwordless.IndexOf("-public") + 1]);
         Assert.Contains("-crossplay", passwordless);
         Assert.Equal("900", passwordless[passwordless.IndexOf("-saveinterval") + 1]);

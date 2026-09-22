@@ -22,6 +22,8 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.client";
     internal static ClientPlugin Instance { get; private set; }
     private ConfigEntry<bool> _allowInventory;
+    private bool? _advertisedInventory;
+    private bool? _inspectionPolicy;
     private ConfigEntry<bool> _allowTelemetry;
     private ConfigEntry<bool> _enableServerCharacters;
     private ZRoutedRpc _registeredRouter;
@@ -54,7 +56,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         }
         Instance = this;
         MigrateLegacyConfig();
-        _allowInventory = Config.Bind("Privacy", "AllowInventoryInspection", false, "Allow this server's authenticated dashboard to request an on-demand inventory snapshot.");
+        _allowInventory = Config.Bind("Privacy", "AllowInventoryInspection", false, "Allow the connected server's authenticated administrators to inspect current stats and inventory, including a live view. Some realms require this permission to join.");
         _allowTelemetry = Config.Bind("Privacy", "AllowDetailedTelemetry", false, "Share death and biome events with the connected server.");
         _enableServerCharacters = Config.Bind("ServerCharacters", "Enabled", true, "Allow this server to make its native character profile authoritative for this session.");
         _updaterNotice = AccessTools.Method(AccessTools.TypeByName("ValheimServerManager.RuntimeUpdater.RuntimeUpdaterPlugin"), "ShowClientNotice");
@@ -96,8 +98,9 @@ public sealed class ClientPlugin : BaseUnityPlugin
             ZRoutedRpc.instance.Register<string, string>("VSM_AdminNotice", OnAdminNotice);
             _registeredRouter = ZRoutedRpc.instance;
         }
-        if (_serverRpc != null && _handshake.TrySendHello(Time.unscaledTime))
+        if (_serverRpc != null && (_handshake.TrySendHello(Time.unscaledTime) || (_handshake.Active && _advertisedInventory != _allowInventory.Value)))
         {
+            _advertisedInventory = _allowInventory.Value;
             InvokeServer("VSM_ClientHello", _allowInventory.Value, _enableServerCharacters.Value ? PluginVersion : "");
             Logger.LogDebug("Sent VSM capability handshake to the server.");
         }
@@ -118,6 +121,16 @@ public sealed class ClientPlugin : BaseUnityPlugin
             if (_biome != Heightmap.Biome.None && biome != _biome) SendEvent("player.biome.changed", new { from = _biome.ToString(), to = biome.ToString(), player = Player.m_localPlayer.GetPlayerName() });
             _biome = biome;
         }
+    }
+
+    private void OnInspectionPolicy(bool required)
+    {
+        if (_inspectionPolicy == required) return;
+        _inspectionPolicy = required;
+        if (!required) return;
+        QueueAdminNotice("Inventory inspection required", _allowInventory.Value
+            ? "This realm requires live, read-only inventory and character inspection by authenticated administrators. Your inventory-sharing permission is enabled. Inspection snapshots are not saved or forwarded to webhooks."
+            : "This realm requires live inventory and character inspection by authenticated administrators. Enable Privacy > AllowInventoryInspection in the Server Manager client configuration and reconnect, or choose another realm. Your privacy setting has not been changed; this connection will be refused after the grace period.");
     }
 
     private void OnServerPolicy(bool serverCharacters, int timeoutSeconds)
@@ -292,6 +305,8 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void ResetConnection()
     {
+        _advertisedInventory = null;
+        _inspectionPolicy = null;
         if (!string.IsNullOrEmpty(_temporaryProfileName))
         {
             try { File.Delete(SaveSystem.GetCharacterPath(FileHelpers.FileSource.Local, _temporaryProfileName)); } catch { }
@@ -337,6 +352,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         {
             if (Instance == null || __instance.IsServer() || __0?.m_rpc == null) return;
             Instance.AttachServerPeer(__0);
+            __0.m_rpc.Register<bool>("VSM_InspectionPolicy", (rpc, required) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInspectionPolicy(required); });
             __0.m_rpc.Register<bool, int>("VSM_ServerPolicy", (rpc, required, timeout) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnServerPolicy(required, timeout); });
             __0.m_rpc.Register<string>("VSM_InventoryRequest", (rpc, requestId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInventoryRequest(__0.m_uid, requestId); });
             __0.m_rpc.Register<bool, string, bool>("VSM_CharacterProfile", (rpc, found, encoded, rejectPreviouslyUsed) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnCharacterProfile(__0.m_uid, found, encoded, rejectPreviouslyUsed); });

@@ -240,7 +240,7 @@ public sealed partial class ModConfigService(
     {
         var directory = Path.Combine(_backupRoot, modId.ToString("N"), Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(relative))).ToLowerInvariant());
         Directory.CreateDirectory(directory);
-        var target = Path.Combine(directory, DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + ".cfg");
+        var target = Path.Combine(directory, DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N") + ".cfg");
         File.WriteAllBytes(target, bytes);
         foreach (var stale in Directory.EnumerateFiles(directory, "*.cfg").OrderByDescending(File.GetLastWriteTimeUtc).Skip(20)) File.Delete(stale);
     }
@@ -249,19 +249,8 @@ public sealed partial class ModConfigService(
 
     internal static string ResolveSafePath(string root, string relative)
     {
-        relative = NormalizeRelative(relative);
         if (!relative.EndsWith(".cfg", StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Only BepInEx .cfg files are supported.");
-        var fullRoot = Path.GetFullPath(root) + Path.DirectorySeparatorChar;
-        var path = Path.GetFullPath(Path.Combine(fullRoot, relative.Replace('/', Path.DirectorySeparatorChar)));
-        if (!path.StartsWith(fullRoot, StringComparison.Ordinal)) throw new InvalidDataException("Configuration path escaped the BepInEx config directory.");
-        var current = path;
-        while (current.StartsWith(fullRoot, StringComparison.Ordinal) && !current.Equals(fullRoot.TrimEnd(Path.DirectorySeparatorChar), StringComparison.Ordinal))
-        {
-            if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidDataException("Symbolic links are not supported for mod configuration.");
-            current = Path.GetDirectoryName(current) ?? "";
-        }
-        return path;
+        return ResolveTextPath(root, relative);
     }
 
     private static string NormalizeRelative(string? value) => PluginRegistryService.CleanRelative(value);

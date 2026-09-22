@@ -10,7 +10,11 @@ public sealed record PlayerInfo(
     int? Ping,
     bool Companion,
     bool InventoryAllowed,
-    bool ServerCharacter = false);
+    bool ServerCharacter = false)
+{
+    // JavaScript numbers cannot represent all 64-bit peer IDs without losing precision.
+    public string PeerKey => PeerId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+}
 
 public sealed record InventoryItem(
     string Prefab,

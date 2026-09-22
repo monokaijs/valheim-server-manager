@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <Reference Include="System.Net.Http" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Compile Include="../Shared/ClientModSelection.cs" Link="ClientSupport/ClientModSelection.cs" />
     <Compile Include="../Shared/ClientNotice.cs" Link="ClientSupport/ClientNotice.cs" />
     <Compile Include="../Shared/NoticeOverlay.cs" Link="ClientSupport/NoticeOverlay.cs" />
     <Compile Include="../Shared/NoticeInputGuard.cs" Link="ClientSupport/NoticeInputGuard.cs" />

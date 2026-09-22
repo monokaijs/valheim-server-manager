@@ -131,7 +131,8 @@ public sealed class ServerSettingsService(IServiceScopeFactory scopes, IDataProt
             "-backupshort", settings.BackupShortSeconds.ToString(CultureInfo.InvariantCulture),
             "-backuplong", settings.BackupLongSeconds.ToString(CultureInfo.InvariantCulture)
         };
-        if (settings.PasswordEnabled) Add(arguments, "-password", password);
+        // Omission lets the game use its own startup default; an empty argv value is intentional.
+        Add(arguments, "-password", settings.PasswordEnabled ? password : "");
         if (settings.Crossplay) arguments.Add("-crossplay");
         if (settings.InstanceId.Length > 0) Add(arguments, "-instanceid", settings.InstanceId);
         if (settings.ManageWorldModifiers)
