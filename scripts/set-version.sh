@@ -14,6 +14,9 @@ perl -0pi -e 's|<Version>[0-9]+\.[0-9]+\.[0-9]+</Version>|<Version>$ENV{RELEASE_
 perl -0pi -e 's/^versionNumber = "[0-9]+\.[0-9]+\.[0-9]+"$/versionNumber = "$ENV{RELEASE_VERSION}"/m' \
   thunderstore.toml
 
+perl -0pi -e 's/^## Unreleased$/## $ENV{RELEASE_VERSION}/m' \
+  thunderstore/CHANGELOG.md
+
 perl -0pi -e 's/(PluginVersion = ")[0-9]+\.[0-9]+\.[0-9]+(";)/$1$ENV{RELEASE_VERSION}$2/g' \
   plugins/ValheimServerManager.Server/ServerPlugin.cs \
   plugins/ValheimServerManager.Client/ClientPlugin.cs

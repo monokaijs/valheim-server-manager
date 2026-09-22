@@ -54,7 +54,7 @@ internal static class ClientModCompatibility
             foreach (var group in optional)
             {
                 var name = (string?)group["name"];
-                if (string.IsNullOrWhiteSpace(name) || name.Length > 200)
+                if (name == null || name.Length > 200 || string.IsNullOrWhiteSpace(name))
                     throw new InvalidDataException("Invalid optional mod group.");
                 groups.Add(new ClientModGroup { Name = name, Packages = ReadPackages(group["packages"], bepinexRoot) });
             }
@@ -109,9 +109,9 @@ internal static class ClientModCompatibility
         }
     }
 
-    private static bool SafeSegment(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= 100
+    private static bool SafeSegment(string? value) => value != null && value.Length > 0 && value.Length <= 100
         && value.All(character => char.IsLetterOrDigit(character) || character == '_' || character == '-');
-    private static bool SafeVersion(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= 32
+    private static bool SafeVersion(string? value) => value != null && value.Length > 0 && value.Length <= 32
         && value.All(character => char.IsDigit(character) || character == '.');
     private static bool IsHex(char value) => (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
 }
