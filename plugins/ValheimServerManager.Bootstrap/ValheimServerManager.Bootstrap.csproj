@@ -3,7 +3,7 @@
     <TargetFrameworks>net472;net7.0</TargetFrameworks>
     <AssemblyName>ValheimServerManagerBootstrap</AssemblyName>
     <RootNamespace>ValheimServerManager.Bootstrap</RootNamespace>
-    <Version>2.1.3</Version>
+    <Version>2.1.4</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>

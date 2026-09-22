@@ -367,7 +367,7 @@ public static class BootstrapSynchronizer
     private static HttpClient CreateClient(int timeoutSeconds)
     {
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSeconds) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/2.1.3");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/2.1.4");
         return client;
     }
 
