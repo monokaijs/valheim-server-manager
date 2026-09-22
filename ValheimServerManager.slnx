@@ -1,5 +1,5 @@
 <Solution>
   <Project Path="src/ValheimServerManager/ValheimServerManager.csproj" />
   <Project Path="tests/ValheimServerManager.Tests/ValheimServerManager.Tests.csproj" />
+  <Project Path="tests/ValheimServerManager.Plugin.Tests/ValheimServerManager.Plugin.Tests.csproj" />
 </Solution>
-

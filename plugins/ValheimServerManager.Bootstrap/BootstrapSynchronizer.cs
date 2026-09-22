@@ -9,6 +9,7 @@ using System.Net.Http;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 
 namespace ValheimServerManager.Bootstrap;
 
@@ -53,14 +54,21 @@ public static class BootstrapSynchronizer
 
     /// <summary>Downloads and stages a manifest relayed by the connected game server.</summary>
     public static SynchronizationResult StageRelayedManifest(string manifestJson)
+        => StageRelayedManifest(manifestJson, CancellationToken.None, null);
+
+    /// <summary>Stages a relayed manifest with cancellation and human-readable download progress.</summary>
+    public static SynchronizationResult StageRelayedManifest(string manifestJson, CancellationToken cancellationToken, Action<string>? progress)
     {
         if (manifestJson == null) throw new ArgumentNullException(nameof(manifestJson));
+        cancellationToken.ThrowIfCancellationRequested();
+        if (manifestJson.Length > MaximumManifestBytes) throw new InvalidDataException("Relayed manifest exceeds the 8 MiB limit");
         var manifestBytes = Encoding.UTF8.GetBytes(manifestJson);
         if (manifestBytes.Length > MaximumManifestBytes) throw new InvalidDataException("Relayed manifest exceeds the 8 MiB limit");
         lock (SynchronizeLock)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var context = CreateContext();
-            return StageManifestLocked(context, LoadState(context.StatePath), manifestBytes);
+            return StageManifestLocked(context, LoadState(context.StatePath), manifestBytes, cancellationToken, progress);
         }
     }
 
@@ -139,11 +147,14 @@ public static class BootstrapSynchronizer
         }
     }
 
-    private static SynchronizationResult StageManifestLocked(
+    internal static SynchronizationResult StageManifestLocked(
         BootstrapContext context,
         BootstrapState previous,
-        byte[] manifestBytes)
+        byte[] manifestBytes,
+        CancellationToken cancellationToken = default,
+        Action<string>? progress = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var manifest = Json.Read<BootstrapManifest>(manifestBytes);
         var manifestId = ManifestIdentity(manifest);
         ValidateManifest(manifest, manifestId, previous);
@@ -151,20 +162,33 @@ public static class BootstrapSynchronizer
         if (string.Equals(previous.Revision, manifest.Revision, StringComparison.Ordinal)
             && string.Equals(previous.ManifestId, manifestId, StringComparison.Ordinal)
             && LocalStateIsHealthy(context.BepInExRoot, previous))
+        {
+            // A later connection to the installed server supersedes an unapplied update.
+            if (File.Exists(context.PendingManifestPath)) File.Delete(context.PendingManifestPath);
             return SynchronizationResult.Unchanged(manifest.Revision);
+        }
 
-        foreach (var package in manifest.Packages)
-            GetPackageArchive(context.Settings, context.StateRoot, package);
+        for (var index = 0; index < manifest.Packages.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var package = manifest.Packages[index];
+            progress?.Invoke($"Checking {package.PackageName} ({index + 1} of {manifest.Packages.Count})");
+            GetPackageArchive(context.Settings, context.StateRoot, package, cancellationToken, progress);
+        }
 
         var packagesChanged = PackageSetsDiffer(previous.Packages, manifest.Packages.Select(package => package.Coordinate));
-        if (!packagesChanged)
-            return ApplyManifestLocked(context, previous, manifestBytes);
-
+        // Even a same-version rebuild or config repair must not swap loaded plugin files.
+        cancellationToken.ThrowIfCancellationRequested();
         var temporary = context.PendingManifestPath + ".new";
-        File.WriteAllBytes(temporary, manifestBytes);
-        AtomicFile.Replace(temporary, context.PendingManifestPath);
+        try
+        {
+            File.WriteAllBytes(temporary, manifestBytes);
+            cancellationToken.ThrowIfCancellationRequested();
+            AtomicFile.Replace(temporary, context.PendingManifestPath);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
         BootstrapLog.Info($"Staged revision {ShortRevision(manifest.Revision)} for the next process start");
-        return SynchronizationResult.Applied(manifest.Revision, true, true);
+        return SynchronizationResult.Applied(manifest.Revision, packagesChanged, true);
     }
 
     private static void ApplyPendingLocked(BootstrapContext context)
@@ -235,8 +259,10 @@ public static class BootstrapSynchronizer
         return target.ToArray();
     }
 
-    private static string GetPackageArchive(BootstrapSettings settings, string stateRoot, ManifestPackage package)
+    private static string GetPackageArchive(BootstrapSettings settings, string stateRoot, ManifestPackage package,
+        CancellationToken cancellationToken = default, Action<string>? progress = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ValidatePackage(package);
         var cacheRoot = Path.Combine(stateRoot, "cache");
         Directory.CreateDirectory(cacheRoot);
@@ -283,26 +309,39 @@ public static class BootstrapSynchronizer
 
         BootstrapLog.Info("Downloading " + package.Coordinate);
         using var client = CreateClient(settings.RequestTimeoutSeconds);
-        using var response = client.GetAsync(package.DownloadUrl, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(settings.RequestTimeoutSeconds));
+        using var response = client.GetAsync(package.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, timeout.Token).GetAwaiter().GetResult();
         response.EnsureSuccessStatusCode();
         if (response.Content.Headers.ContentLength > MaximumArchiveBytes)
             throw new InvalidDataException(package.Coordinate + " exceeds the 500 MiB archive limit");
         var temporary = destination + ".download";
-        using (var source = response.Content.ReadAsStreamAsync().GetAwaiter().GetResult())
-        using (var target = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
-        {
-            var buffer = new byte[81920];
-            long written = 0;
-            int read;
-            while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
-            {
-                written += read;
-                if (written > MaximumArchiveBytes) throw new InvalidDataException(package.Coordinate + " exceeds the 500 MiB archive limit");
-                target.Write(buffer, 0, read);
-            }
-        }
         try
         {
+            using (var source = response.Content.ReadAsStreamAsync().GetAwaiter().GetResult())
+            using (var target = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                var buffer = new byte[81920];
+                var report = Stopwatch.StartNew();
+                long written = 0;
+                while (true)
+                {
+                    // Bound inactivity, not total download time on slower connections.
+                    timeout.CancelAfter(TimeSpan.FromSeconds(settings.RequestTimeoutSeconds));
+                    var read = source.ReadAsync(buffer, 0, buffer.Length, timeout.Token).GetAwaiter().GetResult();
+                    if (read == 0) break;
+                    written += read;
+                    if (written > MaximumArchiveBytes) throw new InvalidDataException(package.Coordinate + " exceeds the 500 MiB archive limit");
+                    target.Write(buffer, 0, read);
+                    if (report.ElapsedMilliseconds >= 250)
+                    {
+                        var total = response.Content.Headers.ContentLength ?? package.FileSize;
+                        progress?.Invoke($"Downloading {package.PackageName}: {written / 1048576d:F1} MB" + (total > 0 ? $" of {total / 1048576d:F1} MB" : ""));
+                        report.Restart();
+                    }
+                }
+            }
+            cancellationToken.ThrowIfCancellationRequested();
             if (package.FileSize.HasValue && package.FileSize.Value != new FileInfo(temporary).Length)
                 throw new InvalidDataException(package.Coordinate + " package size does not match its manifest");
             ValidatePackageHash(temporary, package);
@@ -564,7 +603,7 @@ public static class BootstrapSynchronizer
         catch (Exception error) { Debug.WriteLine(error); }
     }
 
-    private sealed class BootstrapContext
+    internal sealed class BootstrapContext
     {
         public BootstrapContext(
             string bepinExRoot,

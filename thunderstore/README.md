@@ -6,9 +6,9 @@ The BepInEx plugin ID is `dev.creaton.valheim-server-manager`. This package is p
 
 ## Installation
 
-Deploy the complete manager with Docker by following the [project documentation](https://github.com/monokaijs/valheim-server-manager). The container installs and configures this agent automatically. The agent is not a standalone dashboard and expects the manager service to be reachable through its configured loopback WebSocket URL.
+Deploy the complete manager with Docker by following the [project documentation](https://github.com/monokaijs/valheim-server-manager). The minimal setup is `cp .env.example .env` followed by `docker compose up --build -d`; the container installs and configures the agent automatically.
 
-Install this same package on the dedicated server and player clients. There is no separate companion or bootstrap mod to publish or install. Server-only and client-only components disable themselves outside their intended process.
+Install this same package on the dedicated server. Player installation is optional in the default vanilla-compatible mode. If the owner enables server-owned characters, install the same package on each player client; there is no separate companion or bootstrap mod.
 
 ## Security
 

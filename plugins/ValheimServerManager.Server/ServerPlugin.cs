@@ -44,6 +44,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private CancellationTokenSource _lifetime;
     private float _nextSnapshot;
     private float _nextDeathPoll;
+    private float _nextMaintenance;
     private string _saveRequestId;
     private bool _rpcsRegistered;
     private volatile string _clientModManifest;
@@ -59,6 +60,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private ConfigEntry<bool> _acceptFirstJoinProfile;
     private ConfigEntry<bool> _rejectPreviouslyUsedCharacters;
     private ConfigEntry<int> _characterBackups;
+    private ConfigEntry<int> _clientGraceSeconds;
     internal static ServerPlugin Instance { get; private set; }
 
     private void Awake()
@@ -73,10 +75,11 @@ public sealed class ServerPlugin : BaseUnityPlugin
         MigrateLegacyConfig();
         _managerUrl = Config.Bind("Connection", "ManagerUrl", Environment.GetEnvironmentVariable("VSM_AGENT_URL") ?? "ws://127.0.0.1:8080/internal/agent", "Loopback manager WebSocket URL.");
         _agentToken = Config.Bind("Connection", "AgentToken", "", "Shared manager token; the VSM_AGENT_TOKEN environment variable takes precedence and is not persisted.");
-        _serverCharactersEnabled = Config.Bind("ServerCharacters", "Enabled", true, "Make the server copy of each native Valheim character authoritative. Requires the Server Manager client runtime.");
+        _serverCharactersEnabled = Config.Bind("ServerCharacters", "Enabled", false, "Make the server copy of each native Valheim character authoritative. When disabled, players without mods can join normally.");
         _acceptFirstJoinProfile = Config.Bind("ServerCharacters", "AcceptFirstJoinProfile", true, "Allow a character without a server save to seed its first server-owned profile. Disable after migration for a closed realm.");
         _rejectPreviouslyUsedCharacters = Config.Bind("ServerCharacters", "RejectPreviouslyUsedCharacters", false, "When accepting a first-join profile, require a character that has never entered another world or server.");
         _characterBackups = Config.Bind("ServerCharacters", "BackupsToKeep", 10, new ConfigDescription("Rolling native profile backups per character.", new AcceptableValueRange<int>(1, 50)));
+        _clientGraceSeconds = Config.Bind("ServerCharacters", "ClientGraceSeconds", 20, new ConfigDescription("Seconds to wait for the client runtime handshake before rejecting a player while server-owned characters are enabled.", new AcceptableValueRange<int>(5, 120)));
         _lifetime = new CancellationTokenSource();
         Patch(typeof(ClientModRelayPatch)); Patch(typeof(AdmissionPatch)); Patch(typeof(PeerInfoPatch)); Patch(typeof(CharacterIdPatch)); Patch(typeof(DisconnectPatch));
         Patch(typeof(WorldLoadPatch)); Patch(typeof(SaveStartPatch)); Patch(typeof(SaveCompletePatch)); Patch(typeof(GlobalKeyPatch));
@@ -105,12 +108,15 @@ public sealed class ServerPlugin : BaseUnityPlugin
 
     private void Update()
     {
-        while (_mainThread.TryDequeue(out var action)) try { action(); } catch (Exception ex) { Logger.LogError(ex); }
+        for (var index = 0; index < 32 && _mainThread.TryDequeue(out var action); index++)
+            try { action(); } catch (Exception ex) { Logger.LogError(ex); }
         if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
         TryRegisterClientRpcs();
         if (!_pluginRegistryPublished && Time.unscaledTime > 2f) PublishPluginRegistry();
         if (Time.unscaledTime >= _nextSnapshot) { _nextSnapshot = Time.unscaledTime + 5f; SendSnapshot(); }
         if (Time.unscaledTime >= _nextDeathPoll) { _nextDeathPoll = Time.unscaledTime + 1f; PollDeaths(); }
+        if (Time.unscaledTime < _nextMaintenance) return;
+        _nextMaintenance = Time.unscaledTime + .25f;
         foreach (var expired in _inventoryRequests.Where(item => DateTime.UtcNow - item.Value.Item2 > TimeSpan.FromSeconds(30)).Select(item => item.Key).ToArray()) _inventoryRequests.Remove(expired);
         foreach (var scheduled in _scheduledKicks.Where(item => DateTime.UtcNow >= item.Value.Due).ToArray())
         {
@@ -118,7 +124,8 @@ public sealed class ServerPlugin : BaseUnityPlugin
             var peer = ZNet.instance.GetPeers().FirstOrDefault(item => item.m_uid == scheduled.Key);
             if (peer != null) DisconnectPeer(peer);
         }
-        foreach (var peerId in _pendingCharacterProfiles.ToArray())
+        if (!_serverCharactersEnabled.Value) _pendingCharacterProfiles.Clear();
+        foreach (var peerId in _serverCharactersEnabled.Value ? _pendingCharacterProfiles.ToArray() : Array.Empty<long>())
         {
             var peer = ZNet.instance.GetPeers().FirstOrDefault(item => item.m_uid == peerId);
             if (peer == null || string.IsNullOrWhiteSpace(peer.m_playerName)) continue;
@@ -221,7 +228,11 @@ public sealed class ServerPlugin : BaseUnityPlugin
                     return;
                 case "broadcast":
                     var message = ((string)data["message"] ?? "").Trim();
-                    foreach (var peer in ZNet.instance.GetPeers()) ZRoutedRpc.instance.InvokeRoutedRPC(peer.m_uid, "ShowMessage", 2, message);
+                    foreach (var peer in ZNet.instance.GetPeers())
+                    {
+                        if (_companions.ContainsKey(peer.m_uid)) InvokePeer(peer, "VSM_AdminNotice", "Server notice", message);
+                        else ZRoutedRpc.instance.InvokeRoutedRPC(peer.m_uid, "ShowMessage", 2, message);
+                    }
                     Event("admin.broadcast", new { message }); result = new { ok = true }; break;
                 case "player.kick": result = Kick(data); break;
                 case "player.ban": result = Ban(data); break;
@@ -302,17 +313,31 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private void ApplyServerCharacterSettings(JObject payload)
     {
         if (payload == null) return;
+        if (payload["enabled"]?.Type == JTokenType.Boolean)
+            _serverCharactersEnabled.Value = (bool)payload["enabled"];
         if (payload["acceptFirstJoinProfile"]?.Type == JTokenType.Boolean)
             _acceptFirstJoinProfile.Value = (bool)payload["acceptFirstJoinProfile"];
         if (payload["rejectPreviouslyUsedCharacters"]?.Type == JTokenType.Boolean)
             _rejectPreviouslyUsedCharacters.Value = (bool)payload["rejectPreviouslyUsedCharacters"];
+        if (payload["backupsToKeep"]?.Type == JTokenType.Integer)
+            _characterBackups.Value = Math.Max(1, Math.Min(50, (int)payload["backupsToKeep"]));
+        if (payload["clientGraceSeconds"]?.Type == JTokenType.Integer)
+            _clientGraceSeconds.Value = Math.Max(5, Math.Min(120, (int)payload["clientGraceSeconds"]));
+        if (!_serverCharactersEnabled.Value)
+        {
+            _pendingCharacterProfiles.Clear();
+            _characterEnforcementHandled.Clear();
+            foreach (var scheduled in _scheduledKicks.Where(item => item.Value.ServerCharacterRequirement).Select(item => item.Key).ToArray())
+                _scheduledKicks.Remove(scheduled);
+        }
         Config.Save();
-        Logger.LogInfo($"Applied server-character policy: acceptFirstJoin={_acceptFirstJoinProfile.Value}, rejectPreviouslyUsed={_rejectPreviouslyUsedCharacters.Value}.");
+        Logger.LogInfo($"Applied server-character policy: enabled={_serverCharactersEnabled.Value}, acceptFirstJoin={_acceptFirstJoinProfile.Value}, rejectPreviouslyUsed={_rejectPreviouslyUsedCharacters.Value}, backups={_characterBackups.Value}, clientGrace={_clientGraceSeconds.Value}s.");
     }
 
     private void ScheduleKick(ZNetPeer peer, string title, string message, string reason, string eventType)
     {
         InvokePeer(peer, "VSM_AdminNotice", title, message);
+        if (!_companions.ContainsKey(peer.m_uid)) ZRoutedRpc.instance?.InvokeRoutedRPC(peer.m_uid, "ShowMessage", 2, message);
         _scheduledKicks[peer.m_uid] = new ScheduledKick { Due = DateTime.UtcNow.AddSeconds(3) };
         Event(eventType, new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), reason, message });
     }
@@ -328,14 +353,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         if (peer?.m_rpc == null) return;
         try
         {
-            var invoke = peer.m_rpc.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                .FirstOrDefault(method =>
-                {
-                    if (method.Name != "Invoke") return false;
-                    var parameters = method.GetParameters();
-                    return parameters.Length == 2 && parameters[0].ParameterType == typeof(string) && parameters[1].ParameterType == typeof(object[]);
-                });
-            invoke?.Invoke(peer.m_rpc, new object[] { methodName, arguments });
+            peer.m_rpc.Invoke(methodName, arguments);
         }
         catch (Exception exception) { Instance.Logger.LogDebug($"Could not send client notice: {exception.GetBaseException().Message}"); }
     }
@@ -349,7 +367,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         return value.Length is > 0 && value.Length <= maximum && !value.Any(character => char.IsControl(character) && character != '\n') ? value : fallback;
     }
 
-    private sealed class ScheduledKick { public DateTime Due; }
+    private sealed class ScheduledKick { public DateTime Due; public bool ServerCharacterRequirement; }
 
     private void SendSnapshot()
     {
@@ -415,7 +433,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
 
     private void EnforceServerCharacterClients()
     {
-        foreach (var peer in ZNet.instance.GetPeers().Where(peer => peer != null && _joined.TryGetValue(peer.m_uid, out var joined) && DateTime.UtcNow - joined > TimeSpan.FromSeconds(15) && !_serverCharacterClients.Contains(peer.m_uid) && !_characterEnforcementHandled.Contains(peer.m_uid)).ToArray())
+        foreach (var peer in ZNet.instance.GetPeers().Where(peer => peer != null && _joined.TryGetValue(peer.m_uid, out var joined) && DateTime.UtcNow - joined > TimeSpan.FromSeconds(_clientGraceSeconds.Value) && !_serverCharacterClients.Contains(peer.m_uid) && !_characterEnforcementHandled.Contains(peer.m_uid)).ToArray())
         {
             _characterEnforcementHandled.Add(peer.m_uid);
             var reason = "A compatible Server Manager client runtime is required for server-owned characters.";
@@ -423,7 +441,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
             var message = Render(_companionRequiredMessage, peer.m_playerName, reason);
             InvokePeer(peer, "VSM_AdminNotice", "Client update required", message);
             Event("server-character.client.required", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), reason, message });
-            _scheduledKicks[peer.m_uid] = new ScheduledKick { Due = DateTime.UtcNow.AddSeconds(3) };
+            _scheduledKicks[peer.m_uid] = new ScheduledKick { Due = DateTime.UtcNow.AddSeconds(3), ServerCharacterRequirement = true };
         }
     }
 
@@ -455,16 +473,18 @@ public sealed class ServerPlugin : BaseUnityPlugin
             else
             {
                 Logger.LogWarning($"Rejecting {peer.m_playerName}: no imported server character exists.");
-                var method = AccessTools.Method(typeof(ZNet), "InternalKick", new[] { typeof(ZNetPeer) });
-                if (method != null) method.Invoke(ZNet.instance, new object[] { peer }); else peer.m_rpc?.GetSocket()?.Close();
+                ScheduleKick(peer, "Server character required",
+                    "No server character exists for you yet. Ask an administrator to import your character save, then reconnect.",
+                    "No imported server character exists.", "server-character.load.failed");
             }
         }
         catch (Exception exception)
         {
             Logger.LogError($"Unable to load server character for {peer.m_playerName}: {exception}");
             Event("server-character.load.failed", new { player = peer.m_playerName, error = exception.Message });
-            var method = AccessTools.Method(typeof(ZNet), "InternalKick", new[] { typeof(ZNetPeer) });
-            if (method != null) method.Invoke(ZNet.instance, new object[] { peer }); else peer.m_rpc?.GetSocket()?.Close();
+            ScheduleKick(peer, "Server character unavailable",
+                "Your server character could not be loaded. Ask an administrator to check or restore your save, then reconnect.",
+                "The server character could not be loaded.", "server-character.load.failed");
         }
     }
 
@@ -517,11 +537,20 @@ public sealed class ServerPlugin : BaseUnityPlugin
 
     internal void ClientHello(long sender, bool inventoryAllowed, string companionVersion)
     {
+        var peer = ZNet.instance?.GetPeers().FirstOrDefault(item => item.m_uid == sender);
+        if (peer == null || sender == 0) return;
+        var firstHello = !_companions.TryGetValue(sender, out var previousInventory);
         _companions[sender] = inventoryAllowed;
         var characterCapable = System.Version.TryParse(companionVersion, out var version) && version >= new System.Version(1, 2, 0);
+        var previouslyCapable = _serverCharacterClients.Contains(sender);
         if (characterCapable) _serverCharacterClients.Add(sender);
-        Logger.LogInfo($"Client runtime handshake from peer {sender}: version={companionVersion}, inventory={inventoryAllowed}, serverCharacters={characterCapable}.");
-        Event("companion.connected", new { peerId = sender, inventoryAllowed, companionVersion, serverCharacters = characterCapable }, "companion", "reported");
+        else _serverCharacterClients.Remove(sender);
+        InvokePeer(peer, "VSM_ServerPolicy", _serverCharactersEnabled.Value, _clientGraceSeconds.Value);
+        if (firstHello || previousInventory != inventoryAllowed || previouslyCapable != characterCapable)
+        {
+            Logger.LogInfo($"Client runtime handshake from peer {sender}: version={companionVersion}, inventory={inventoryAllowed}, serverCharacters={characterCapable}.");
+            Event("companion.connected", new { peerId = sender, inventoryAllowed, companionVersion, serverCharacters = characterCapable }, "companion", "reported");
+        }
         if (_serverCharactersEnabled.Value && characterCapable && !_characterProfileSent.Contains(sender)) _pendingCharacterProfiles.Add(sender);
     }
 
@@ -532,6 +561,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         if (peer == null) return;
         try
         {
+            if (encoded == null || encoded.Length > 2796204) throw new InvalidDataException("Native character profile size is invalid.");
             var bytes = Convert.FromBase64String(encoded ?? "");
             if (bytes.Length < 32 || bytes.Length > 2 * 1024 * 1024) throw new InvalidDataException("Native character profile size is invalid.");
             ValidateNativeProfile(bytes);
@@ -630,23 +660,33 @@ public sealed class ServerPlugin : BaseUnityPlugin
         ClientHello(peer.m_uid, hello.Item1, hello.Item2);
     }
     internal void Spawned(ZNetPeer peer) { if (peer != null) Event("player.spawned", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), peerId = peer.m_uid }); }
-    internal void Left(ZNetPeer peer) { if (peer == null) return; _pendingPeerHellos.Remove(peer); if (!_joined.Remove(peer.m_uid)) return; _companions.Remove(peer.m_uid); _serverCharacterClients.Remove(peer.m_uid); _characterEnforcementHandled.Remove(peer.m_uid); _pendingCharacterProfiles.Remove(peer.m_uid); _characterProfileSent.Remove(peer.m_uid); _scheduledKicks.Remove(peer.m_uid); Event("player.left", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), peerId = peer.m_uid }); }
+    internal void Left(ZNetPeer peer)
+    {
+        if (peer == null) return;
+        _pendingPeerHellos.Remove(peer);
+        var joined = _joined.Remove(peer.m_uid);
+        _companions.Remove(peer.m_uid);
+        _serverCharacterClients.Remove(peer.m_uid);
+        _characterEnforcementHandled.Remove(peer.m_uid);
+        _pendingCharacterProfiles.Remove(peer.m_uid);
+        _characterProfileSent.Remove(peer.m_uid);
+        _scheduledKicks.Remove(peer.m_uid);
+        _dead.Remove(peer.m_characterID);
+        foreach (var request in _inventoryRequests.Where(item => item.Value.Item1 == peer.m_uid).Select(item => item.Key).ToArray())
+        {
+            _inventoryRequests.Remove(request);
+            Reply(request, new { ok = false, error = "The player disconnected before the snapshot was ready." });
+        }
+        if (joined) Event("player.left", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), peerId = peer.m_uid });
+    }
     internal void RelayClientManifest(ZNetPeer peer)
     {
         var manifest = _clientModManifest;
         if (peer?.m_rpc == null || string.IsNullOrWhiteSpace(manifest)) return;
         try
         {
-            var invoke = peer.m_rpc.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                .FirstOrDefault(method =>
-                {
-                    if (method.Name != "Invoke") return false;
-                    var parameters = method.GetParameters();
-                    return parameters.Length == 2 && parameters[0].ParameterType == typeof(string) && parameters[1].ParameterType == typeof(object[]);
-                });
-            if (invoke == null) throw new MissingMethodException(peer.m_rpc.GetType().FullName, "Invoke(string, object[])");
-            invoke.Invoke(peer.m_rpc, new object[] { ClientManifestRpc, new object[] { manifest } });
-            invoke.Invoke(peer.m_rpc, new object[] { LegacyClientManifestRpc, new object[] { manifest } });
+            peer.m_rpc.Invoke(ClientManifestRpc, manifest);
+            peer.m_rpc.Invoke(LegacyClientManifestRpc, manifest);
             Logger.LogInfo($"Relayed the client mod manifest to peer {peer.m_uid}.");
         }
         catch (Exception exception) { Logger.LogWarning($"Could not relay the client mod manifest: {exception.GetBaseException().Message}"); }
@@ -751,7 +791,11 @@ public sealed class ServerPlugin : BaseUnityPlugin
             {
                 // Send the authoritative profile before releasing Valheim's world-data packets.
                 // Otherwise the client blocks in synchronous world generation and cannot process it.
-                if (Instance._serverCharactersEnabled.Value) Instance.SendServerCharacter(peer);
+                if (Instance._serverCharactersEnabled.Value)
+                {
+                    InvokePeer(peer, "VSM_ServerPolicy", true, Instance._clientGraceSeconds.Value);
+                    Instance.SendServerCharacter(peer);
+                }
                 Instance.Joined(peer);
             }
             finally

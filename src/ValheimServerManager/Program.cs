@@ -319,7 +319,7 @@ api.MapPut("/settings/server-characters", async (ServerCharacterSettings request
     var saved = await settings.Set(request, ct);
     await agent.PublishServerCharacterSettings(ct);
     await audit.Write("server-characters.settings.update", "valheim", "success",
-        $"acceptFirstJoin={saved.AcceptFirstJoinProfile};rejectPreviouslyUsed={saved.RejectPreviouslyUsedCharacters}");
+        $"enabled={saved.Enabled};acceptFirstJoin={saved.AcceptFirstJoinProfile};rejectPreviouslyUsed={saved.RejectPreviouslyUsedCharacters};backups={saved.BackupsToKeep};clientGrace={saved.ClientGraceSeconds}");
     return Results.Ok(saved);
 }).RequireAntiforgery();
 

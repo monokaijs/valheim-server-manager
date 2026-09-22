@@ -10,6 +10,7 @@
     <BepInExRoot Condition="'$(BepInExRoot)' == ''">$(BEPINEX_ROOT)</BepInExRoot>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Shared/*.cs" Link="ClientSupport/%(Filename)%(Extension)" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
@@ -21,6 +22,8 @@
     <Reference Include="UnityEngine"><HintPath>$(ValheimManaged)/UnityEngine.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(ValheimManaged)/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.ImageConversionModule"><HintPath>$(ValheimManaged)/UnityEngine.ImageConversionModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(ValheimManaged)/UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(ValheimManaged)/UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
   <Target Name="VerifyGameReferences" BeforeTargets="CoreCompile">
     <Error Condition="!Exists('$(ValheimManaged)/assembly_valheim.dll')" Text="Set ValheimManaged to the current valheim_Data/Managed directory." />

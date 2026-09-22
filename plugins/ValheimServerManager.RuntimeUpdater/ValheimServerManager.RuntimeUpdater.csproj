@@ -12,12 +12,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Reference Include="System.Net.Http" />
+    <Compile Include="../Shared/ClientNotice.cs" Link="ClientSupport/ClientNotice.cs" />
+    <Compile Include="../Shared/NoticeOverlay.cs" Link="ClientSupport/NoticeOverlay.cs" />
+    <Compile Include="../Shared/NoticeInputGuard.cs" Link="ClientSupport/NoticeInputGuard.cs" />
     <ProjectReference Include="../ValheimServerManager.Bootstrap/ValheimServerManager.Bootstrap.csproj" Private="false" />
     <Reference Include="BepInEx"><HintPath>$(BepInExRoot)/core/BepInEx.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="0Harmony"><HintPath>$(BepInExRoot)/core/0Harmony.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine"><HintPath>$(ValheimManaged)/UnityEngine.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(ValheimManaged)/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(ValheimManaged)/UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(ValheimManaged)/UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 
   <Target Name="DoNotCopyGameAssemblies" AfterTargets="ResolveReferences">

@@ -41,20 +41,12 @@ internal sealed class ManifestHandshake
         try
         {
             var rpc = peer.GetType().GetField("m_rpc", AllMembers)?.GetValue(peer);
-            if (rpc == null) return;
+            if (rpc == null || IsServer(znet)) return;
+            RuntimeUpdaterPlugin.Instance?.BeginConnection(rpc);
             RpcReflectionBridge.RegisterString(rpc, ManifestRpc, ReceiveManifest);
             RpcReflectionBridge.RegisterString(rpc, LegacyManifestRpc, ReceiveManifest);
-            if (!IsServer(znet)) return;
-
-            var manifest = BootstrapSynchronizer.ReadRelayManifest();
-            if (string.IsNullOrWhiteSpace(manifest))
-            {
-                _log.LogWarning("A client connected, but no validated manifest is available to relay");
-                return;
-            }
-
-            RpcReflectionBridge.InvokeString(rpc, ManifestRpc, manifest!);
-            _log.LogInfo($"Relayed the manifest to a connecting client ({manifest!.Length} characters)");
+            RpcReflectionBridge.RegisterStrings(rpc, "VSM_AdminNotice", (source, title, message) =>
+                RuntimeUpdaterPlugin.Instance?.ReceiveServerNotice(source, title, message));
         }
         catch (Exception error)
         {
@@ -62,9 +54,9 @@ internal sealed class ManifestHandshake
         }
     }
 
-    private static void ReceiveManifest(object _, string manifest)
+    private static void ReceiveManifest(object rpc, string manifest)
     {
-        RuntimeUpdaterPlugin.Instance?.QueueRelayedManifest(manifest);
+        RuntimeUpdaterPlugin.Instance?.QueueRelayedManifest(rpc, manifest);
     }
 
     private static bool IsServer(object znet)

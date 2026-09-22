@@ -412,14 +412,15 @@ public sealed class CoreTests
         Directory.CreateDirectory(root);
         var services = new ServiceCollection();
         services.AddDbContext<ManagerDbContext>(options => options.UseSqlite($"Data Source={Path.Combine(root, "manager.db")}"));
+        services.AddSingleton<IConfiguration>(new ConfigurationBuilder().AddInMemoryCollection().Build());
         services.AddSingleton<ServerCharacterSettingsService>();
         await using var provider = services.BuildServiceProvider();
         await using (var scope = provider.CreateAsyncScope()) await scope.ServiceProvider.GetRequiredService<ManagerDbContext>().Database.EnsureCreatedAsync();
         var settings = provider.GetRequiredService<ServerCharacterSettingsService>();
 
-        Assert.Equal(new ServerCharacterSettings(true, false), await settings.Get());
-        await settings.Set(new ServerCharacterSettings(true, true));
-        Assert.Equal(new ServerCharacterSettings(true, true), await settings.Get());
+        Assert.Equal(new ServerCharacterSettings(false, true, false, 10, 20), await settings.Get());
+        await settings.Set(new ServerCharacterSettings(true, true, true, 20, 30));
+        Assert.Equal(new ServerCharacterSettings(true, true, true, 20, 30), await settings.Get());
         Directory.Delete(root, true);
     }
 

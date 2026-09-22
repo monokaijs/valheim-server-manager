@@ -7,7 +7,7 @@ A self-hosted Valheim control plane with a web dashboard, live server agent, ser
 - One-container Linux deployment that installs the dedicated server with SteamCMD and supervises it without access to the Docker socket.
 - React/shadcn dashboard based on the `dashboard-01` shell for status, online players, live character inspection, access lists, Thunderstore/manual mods, webhooks, safe console commands, and auditing.
 - BepInEx server agent built at startup against the exact installed Valheim assemblies.
-- Server Manager client runtime required when server-owned characters are enabled. Dashboard inventory inspection and detailed telemetry remain independently disabled until the player opts in.
+- Vanilla-compatible by default. Server-owned characters and managed-client enforcement are a single optional switch; dashboard inventory inspection and detailed telemetry remain independently opt-in.
 - SQLite persistence, Steam OpenID authentication restricted to `adminlist.txt`, secure cookies, CSRF protection, login throttling, SignalR updates, signed webhook delivery, and automatic mod rollback.
 
 The server plugin identifier is `dev.creaton.valheim-server-manager`; the automatically managed client runtime uses `dev.creaton.valheim-server-manager.client`. Older `dev.monokai.*` configuration files are copied forward automatically on first load and retained as rollback copies.
@@ -18,12 +18,11 @@ Requirements: Docker Engine with Compose, an x86-64 Linux host, and roughly 5 GB
 
 ```bash
 cp .env.example .env
-# Edit .env. The server password must be at least five characters and must not appear in the server name.
+# Optional: edit the server name, world, ports, and password in .env.
 docker compose up --build -d
-docker compose logs -f valheim-manager
 ```
 
-Set `VSM_PUBLIC_URL` to the externally visible dashboard origin, then open that URL. Sign-in is handled by Steam OpenID; the authenticated Steam64 ID must appear in `adminlist.txt` as either `Steam_<id>` (the normal Valheim form) or the numeric ID. Authorization is rechecked against the file on every authenticated request, so removing an administrator also invalidates their dashboard session. Put the dashboard behind an HTTPS reverse proxy before exposing it to the internet.
+That is enough to start a private, passwordless, vanilla-compatible server. Open port `8080` for the dashboard and UDP `2456-2458` for Valheim. Set `VSM_PUBLIC_URL` before using Steam dashboard sign-in; the authenticated Steam64 ID must appear in `adminlist.txt` as either `Steam_<id>` or the numeric ID. Put the dashboard behind HTTPS before exposing it to the internet.
 
 The first start takes several minutes because it downloads Valheim, installs BepInEx, and compiles both plugins. Game, world, manager, log, and BepInEx data live in named Docker volumes.
 
@@ -64,7 +63,17 @@ Install the Server Manager ZIP through r2modman/Thunderstore Mod Manager or copy
 
 Server Manager owns only `BepInEx/plugins/ValheimServerManagerManaged`; personal plugins are left alone. Manual ZIP uploads and protected infrastructure are server-only because the manager has no stable Thunderstore source for them. The client-targeted Server Manager runtime is embedded in the relayed manifest with an exact size and SHA-256, so the dashboard does not need to be publicly reachable.
 
-Server-owned characters are enabled by default. The player can separately opt into dashboard inspection and telemetry through:
+Players without mods can join by default. Under **Settings → Server → Client compatibility**, enable managed-client mode only when server-owned characters are wanted. The same defaults are configurable before first start:
+
+```env
+VSM_SERVER_CHARACTERS_ENABLED=false
+VSM_SERVER_CHARACTERS_ACCEPT_FIRST_JOIN=true
+VSM_SERVER_CHARACTERS_REJECT_USED=false
+VSM_SERVER_CHARACTERS_BACKUPS=10
+VSM_CLIENT_MOD_GRACE_SECONDS=20
+```
+
+When server-owned characters are enabled, the player can separately opt into dashboard inspection and telemetry through:
 
 ```ini
 [Privacy]
@@ -106,6 +115,10 @@ restart [seconds] [reason]
 ```
 
 Kick and online-ban actions in the Players page accept an optional reason. Compatible clients see the rendered notice before the delayed disconnect, and the reason is included in audit and event records. Welcome, kick, ban, restart, whitelist-rejection, and client-runtime-required templates are editable under **Settings → Messages** with a fixed allowlist of placeholders.
+
+Client notices adapt to their purpose. Welcome messages wait until the character is ready and appear briefly in the lower-right corner. Kick, ban, access, and character errors remain available at the menu until dismissed, with a copy-message action. The update receiver can display these notices even before the full client runtime is installed. Mod downloads show progress; a successful update offers **Quit Valheim** or **Later**, while a failed update explains how to retry without forcing the game to quit. The Messages editor previews the wording and checks length and line limits before saving.
+
+VSM no longer adds a character-negotiation delay to vanilla connections. A server that requires managed characters explicitly tells the client to wait; invalid or timed-out profiles stop the connection with an actionable notice. Inventory inspection caches icons and spreads new icon rendering across frames. See [the client experience review](docs/client-experience-review.md) for implementation details, verified behavior, and gameplay checks.
 
 ## Mods
 

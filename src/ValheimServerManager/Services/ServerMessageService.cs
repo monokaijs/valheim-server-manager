@@ -115,14 +115,14 @@ public sealed partial class ServerMessageService(IServiceScopeFactory scopes, IC
 
     private static string ValidateTemplate(string name, string? value, params string[] allowed)
     {
-        value = (value ?? "").Trim();
+        value = (value ?? "").Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Trim();
         if (value.Length is < 1 or > 500) throw new ArgumentException($"{name} must contain between 1 and 500 characters.");
         if (value.Any(character => char.IsControl(character) && character is not '\n')) throw new ArgumentException($"{name} contains unsupported control characters.");
         foreach (Match match in PlaceholderPattern().Matches(value))
             if (!allowed.Contains(match.Groups[1].Value, StringComparer.Ordinal))
                 throw new ArgumentException($"{name} contains unsupported placeholder {match.Value}.");
         if (value.Count(character => character == '\n') > 3) throw new ArgumentException($"{name} cannot exceed four lines.");
-        return value.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        return value;
     }
 
     [GeneratedRegex("\\{([^{}]+)\\}")]

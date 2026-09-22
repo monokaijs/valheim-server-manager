@@ -30,6 +30,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SiteHeader } from "@/components/site-header"
+import { ClientNoticePreview } from "@/components/client-notice-preview"
 import { cn } from "@/lib/utils"
 import { ensureCsrf, post, remove, request } from "./api"
 import "./styles.css"
@@ -57,7 +58,7 @@ type CharacterSnapshot = {
 type ServerCharacter = { platformId: string; characterName: string; fileName: string; size: number; modifiedAt: string; sha256: string }
 type CharacterStore = { installed: boolean; importAvailable: boolean; serverStatus: string; characters: ServerCharacter[] }
 type ServerAccessSettings = { passwordEnabled: boolean; hasPassword: boolean; publicListing: boolean; serverName: string; port: number }
-type ServerCharacterSettings = { acceptFirstJoinProfile: boolean; rejectPreviouslyUsedCharacters: boolean }
+type ServerCharacterSettings = { enabled: boolean; acceptFirstJoinProfile: boolean; rejectPreviouslyUsedCharacters: boolean; backupsToKeep: number; clientGraceSeconds: number }
 type ApiToken = { id: string; name: string; prefix: string; scopes: string[]; createdAt: string; lastUsedAt?: string; revokedAt?: string }
 type CreatedApiToken = ApiToken & { token: string }
 type JoinRequest = { id: string; platformId: string; playerName: string; status: "pending" | "approved" | "denied"; requestedAt: string; lastAttemptAt: string; attemptCount: number; resolvedAt?: string; resolvedBy?: string }
@@ -492,38 +493,46 @@ function ServerAccessSettingsCard() {
 
 function ServerCharacterSettingsCard() {
   const { data, error, load } = useLoad<ServerCharacterSettings>("/api/v1/settings/server-characters")
+  const [enabled, setEnabled] = useState(false)
   const [acceptFirstJoinProfile, setAcceptFirstJoinProfile] = useState(true)
   const [rejectPreviouslyUsedCharacters, setRejectPreviouslyUsedCharacters] = useState(false)
+  const [backupsToKeep, setBackupsToKeep] = useState(10)
+  const [clientGraceSeconds, setClientGraceSeconds] = useState(20)
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     if (!data) return
+    setEnabled(data.enabled)
     setAcceptFirstJoinProfile(data.acceptFirstJoinProfile)
     setRejectPreviouslyUsedCharacters(data.rejectPreviouslyUsedCharacters)
+    setBackupsToKeep(data.backupsToKeep)
+    setClientGraceSeconds(data.clientGraceSeconds)
   }, [data])
   const save = async (event: FormEvent) => {
     event.preventDefault()
     setBusy(true)
     try {
-      await request<ServerCharacterSettings>("/api/v1/settings/server-characters", { method: "PUT", body: JSON.stringify({ acceptFirstJoinProfile, rejectPreviouslyUsedCharacters }) })
-      toast.success("Server-character policy applied live")
+      await request<ServerCharacterSettings>("/api/v1/settings/server-characters", { method: "PUT", body: JSON.stringify({ enabled, acceptFirstJoinProfile, rejectPreviouslyUsedCharacters, backupsToKeep, clientGraceSeconds }) })
+      toast.success(enabled ? "Server-owned characters enabled" : "Vanilla-compatible mode enabled")
       await load()
     } catch (cause) { toast.error((cause as Error).message) } finally { setBusy(false) }
   }
-  return <Card><CardHeader><CardTitle>Server character admission</CardTitle><CardDescription>Control which character may seed a player's first server-owned save. Existing server characters are unaffected.</CardDescription></CardHeader><CardContent><ErrorAlert text={error} /><form onSubmit={save} className="space-y-4"><div className="flex items-center justify-between rounded-lg border p-4"><div><p className="text-sm font-medium">Accept a profile on first join</p><p className="text-xs text-muted-foreground">When disabled, an administrator must import the player's .fch save before they can enter.</p></div><Switch checked={acceptFirstJoinProfile} onCheckedChange={setAcceptFirstJoinProfile} /></div><div className="flex items-center justify-between rounded-lg border p-4"><div><p className="text-sm font-medium">Reject previously used characters</p><p className="text-xs text-muted-foreground">On first join, require a character with no saved world history. This blocks characters used on another server or in single-player.</p></div><Switch checked={rejectPreviouslyUsedCharacters} disabled={!acceptFirstJoinProfile} onCheckedChange={setRejectPreviouslyUsedCharacters} /></div><Alert><ShieldCheck /><AlertTitle>Strict first-entry check</AlertTitle><AlertDescription>Valheim saves do not reliably identify the exact foreign server. Strict mode therefore rejects any character with existing world history. Admin-imported saves and this server's existing profiles remain allowed.</AlertDescription></Alert><Button disabled={busy}>{busy ? <RefreshCw className="animate-spin" /> : <Shield />}{busy ? "Applying…" : "Save character policy"}</Button></form></CardContent></Card>
+  return <Card><CardHeader><CardTitle>Client compatibility</CardTitle><CardDescription>Choose a normal vanilla-compatible server or opt into server-owned characters and managed clients.</CardDescription></CardHeader><CardContent><ErrorAlert text={error} /><form onSubmit={save} className="space-y-4"><div className="flex items-center justify-between rounded-lg border p-4"><div><div className="flex items-center gap-2"><p className="text-sm font-medium">Allow players without mods</p><Badge variant={!enabled ? "secondary" : "outline"}>{!enabled ? "Recommended" : "Off"}</Badge></div><p className="text-xs text-muted-foreground">Disables server-owned characters. Players can join with an unmodified Valheim client.</p></div><Switch checked={!enabled} onCheckedChange={allow => setEnabled(!allow)} /></div><div className="flex items-center justify-between rounded-lg border p-4"><div><p className="text-sm font-medium">Accept a profile on first join</p><p className="text-xs text-muted-foreground">When disabled, an administrator must import the player's .fch save before they can enter.</p></div><Switch checked={acceptFirstJoinProfile} disabled={!enabled} onCheckedChange={setAcceptFirstJoinProfile} /></div><div className="flex items-center justify-between rounded-lg border p-4"><div><p className="text-sm font-medium">Reject previously used characters</p><p className="text-xs text-muted-foreground">Require a new character with no existing world history on first join.</p></div><Switch checked={rejectPreviouslyUsedCharacters} disabled={!enabled || !acceptFirstJoinProfile} onCheckedChange={setRejectPreviouslyUsedCharacters} /></div><div className="grid gap-4 sm:grid-cols-2"><div className="space-y-1.5"><Label htmlFor="character-backups">Character backups</Label><Input id="character-backups" type="number" min={1} max={50} value={backupsToKeep} disabled={!enabled} onChange={event => setBackupsToKeep(Number(event.target.value))} /><p className="text-[11px] text-muted-foreground">Rolling native saves per character (1–50).</p></div><div className="space-y-1.5"><Label htmlFor="client-grace">Client handshake grace</Label><Input id="client-grace" type="number" min={5} max={120} value={clientGraceSeconds} disabled={!enabled} onChange={event => setClientGraceSeconds(Number(event.target.value))} /><p className="text-[11px] text-muted-foreground">Seconds before a missing client mod is rejected (5–120).</p></div></div>{enabled ? <Alert><ShieldCheck /><AlertTitle>Managed-client mode</AlertTitle><AlertDescription>Server-owned characters require Server Manager on each client. Players without it are rejected after the configured grace period.</AlertDescription></Alert> : <Alert><Users /><AlertTitle>Vanilla-compatible mode</AlertTitle><AlertDescription>Server administration remains active, but character transfer, checkpoints, and client-mod enforcement are disabled.</AlertDescription></Alert>}<Button disabled={busy}>{busy ? <RefreshCw className="animate-spin" /> : <Shield />}{busy ? "Applying…" : "Save compatibility mode"}</Button></form></CardContent></Card>
 }
 
 const messageFields: { key: keyof ServerMessages; label: string; placeholders: string; detail: string }[] = [
-  { key: "welcome", label: "Welcome", placeholders: "{player} {server}", detail: "Shown after a player is admitted." },
-  { key: "kick", label: "Kick", placeholders: "{player} {server} {reason}", detail: "Shown before an administrator kick." },
-  { key: "ban", label: "Ban", placeholders: "{player} {server} {reason}", detail: "Shown before an online player is banned." },
+  { key: "welcome", label: "Welcome", placeholders: "{player} {server}", detail: "A quiet notice shown once the character is ready." },
+  { key: "kick", label: "Kick", placeholders: "{player} {server} {reason}", detail: "Sent before a kick; remains readable at the menu on compatible clients." },
+  { key: "ban", label: "Ban", placeholders: "{player} {server} {reason}", detail: "Sent before an online ban; remains readable at the menu on compatible clients." },
   { key: "restart", label: "Restart", placeholders: "{server} {seconds} {reason}", detail: "Broadcast for delayed safe-console restarts." },
-  { key: "whitelistRejected", label: "Whitelist rejection", placeholders: "{player} {server}", detail: "Sent during a rejected connection when the client runtime is available." },
+  { key: "whitelistRejected", label: "Whitelist rejection", placeholders: "{player} {server}", detail: "Explain how to get approval. The Server Manager update receiver can show this before the full client runtime is installed." },
   { key: "companionRequired", label: "Client runtime required", placeholders: "{player} {server}", detail: "Shown when server-owned characters require a client restart/update." },
 ]
 
 function ServerMessagesSettingsCard() {
   const { data, error, load } = useLoad<ServerMessages>("/api/v1/settings/messages")
   const [values, setValues] = useState<ServerMessages | null>(null)
+  const previewRef = useRef<HTMLElement>(null)
+  const [preview, setPreview] = useState<keyof ServerMessages>("kick")
   const [busy, setBusy] = useState(false)
   useEffect(() => { if (data) setValues(data) }, [data])
   const save = async (event: FormEvent) => {
@@ -534,7 +543,32 @@ function ServerMessagesSettingsCard() {
       setValues(saved); toast.success("Server messages published to the live agent"); await load()
     } catch (cause) { toast.error((cause as Error).message) } finally { setBusy(false) }
   }
-  return <Card><CardHeader><CardTitle>Player-facing messages</CardTitle><CardDescription>Customize safe templates without exposing arbitrary console commands. Unknown placeholders are rejected.</CardDescription></CardHeader><CardContent><ErrorAlert text={error} />{values && <form onSubmit={save} className="space-y-5">{messageFields.map(field => <div key={field.key} className="space-y-1.5"><div className="flex flex-wrap items-end justify-between gap-2"><Label htmlFor={`message-${field.key}`}>{field.label}</Label><code className="text-[10px] text-muted-foreground">{field.placeholders}</code></div><Textarea id={`message-${field.key}`} value={values[field.key]} maxLength={500} rows={2} onChange={event => setValues({ ...values, [field.key]: event.target.value })} /><p className="text-[11px] text-muted-foreground">{field.detail}</p></div>)}<Button disabled={busy}>{busy ? <RefreshCw className="animate-spin" /> : <ScrollText />}{busy ? "Publishing…" : "Save messages"}</Button></form>}</CardContent></Card>
+  const samples: Record<string, string> = { player: "Astrid", server: "Your server", reason: "Please contact an administrator before rejoining.", seconds: "60" }
+  const titles: Record<keyof ServerMessages, string> = { welcome: "Welcome", kick: "Kicked", ban: "Banned", restart: "Server notice", whitelistRejected: "Whitelist approval required", companionRequired: "Client update required" }
+  const previewMessage = (values?.[preview] ?? "").replace(/\{(player|server|reason|seconds)\}/g, (_, key: string) => samples[key])
+  const tooManyLines = values && messageFields.some(field => values[field.key].split("\n").length > 4)
+  return <Card>
+    <CardHeader><CardTitle>Player-facing messages</CardTitle><CardDescription>Give players a clear reason and a next step. Use up to 500 characters and four lines per message.</CardDescription></CardHeader>
+    <CardContent><ErrorAlert text={error} />{values && <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_minmax(280px,380px)]">
+      <aside ref={previewRef} className="min-w-0 space-y-3 xl:sticky xl:top-6 xl:col-start-2 xl:row-start-1 xl:self-start" aria-label="Client notice preview">
+        <Label htmlFor="notice-preview-type">Client preview</Label>
+        <Select value={preview} onValueChange={value => setPreview(value as keyof ServerMessages)}><SelectTrigger id="notice-preview-type" className="w-full"><SelectValue /></SelectTrigger><SelectContent>{messageFields.map(field => <SelectItem key={field.key} value={field.key}>{field.label}</SelectItem>)}</SelectContent></Select>
+        <ClientNoticePreview title={titles[preview]} message={previewMessage} persistent={preview !== "welcome" && preview !== "restart"} />
+      </aside>
+      <form onSubmit={save} className="min-w-0 space-y-5 xl:col-start-1 xl:row-start-1">
+        {messageFields.map(field => {
+          const lines = values[field.key].split("\n").length
+          return <div key={field.key} className="space-y-1.5">
+            <div className="flex flex-wrap items-end justify-between gap-2"><Label htmlFor={`message-${field.key}`}>{field.label}</Label><div className="flex items-center gap-3"><button type="button" className="text-xs text-primary underline-offset-4 hover:underline" aria-label={`Preview ${field.label.toLowerCase()} notice`} onClick={() => { setPreview(field.key); previewRef.current?.scrollIntoView({ block: "nearest", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" }) }}>Preview</button><span className="text-[11px] text-muted-foreground">{values[field.key].length}/500</span></div></div>
+            <Textarea id={`message-${field.key}`} value={values[field.key]} maxLength={500} rows={3} required aria-invalid={lines > 4} aria-describedby={`message-help-${field.key}`} onFocus={() => setPreview(field.key)} onChange={event => setValues({ ...values, [field.key]: event.target.value })} />
+            <div id={`message-help-${field.key}`} className="space-y-1"><p className="text-[11px] text-muted-foreground">{field.detail}</p><code className="text-[10px] text-muted-foreground">{field.placeholders}</code>{lines > 4 && <p className="text-xs text-destructive" role="alert">Use no more than four lines ({lines} entered).</p>}</div>
+          </div>
+        })}
+        <Button disabled={busy || !!tooManyLines}>{busy ? <RefreshCw className="animate-spin" /> : <ScrollText />}{busy ? "Publishing…" : "Save messages"}</Button>
+      </form>
+
+    </div>}</CardContent>
+  </Card>
 }
 
 function ApiTokensSettingsCard() {
@@ -568,7 +602,7 @@ function ManagerUpdateSettingsCard() {
 }
 
 function SettingsPage() {
-  return <div className="space-y-6"><PageHeader page="settings" /><Tabs defaultValue="server"><TabsList><TabsTrigger value="server">Server</TabsTrigger><TabsTrigger value="updates">Updates</TabsTrigger><TabsTrigger value="messages">Messages</TabsTrigger><TabsTrigger value="api">API tokens</TabsTrigger><TabsTrigger value="privacy">Privacy</TabsTrigger><TabsTrigger value="artifacts">Artifacts</TabsTrigger></TabsList><TabsContent value="server" className="space-y-4 pt-2"><ServerAccessSettingsCard /><ServerCharacterSettingsCard /></TabsContent><TabsContent value="updates" className="pt-2"><ManagerUpdateSettingsCard /></TabsContent><TabsContent value="messages" className="pt-2"><ServerMessagesSettingsCard /></TabsContent><TabsContent value="api" className="pt-2"><ApiTokensSettingsCard /></TabsContent><TabsContent value="privacy" className="pt-2"><Card><CardHeader><CardTitle>Privacy defaults</CardTitle><CardDescription>Collection remains narrow until explicitly enabled.</CardDescription></CardHeader><CardContent className="divide-y rounded-lg border bg-background/40 px-4">{[["Chat webhooks", "Disabled until explicitly filtered"], ["Inventory inspection", "Consent-based, on demand, never persisted"], ["Server character", "Native gameplay profile is server-authoritative"], ["Private whispers", "Never captured"], ["Detailed telemetry", "Opt-in on each client"]].map(([label, value]) => <div className="flex flex-col justify-between gap-1 py-3 sm:flex-row sm:items-center" key={label}><span className="text-sm font-medium">{label}</span><span className="text-sm text-muted-foreground">{value}</span></div>)}</CardContent></Card></TabsContent><TabsContent value="artifacts" className="pt-2"><Card><CardHeader><CardTitle>Server Manager package</CardTitle><CardDescription>Install this one package on a dedicated server or player client. Client runtime and required server mods synchronize automatically after connection.</CardDescription></CardHeader><CardContent><Button asChild className="h-auto justify-start p-4"><a href="/api/v1/downloads/plugin"><PackageCheck className="size-5" /><span className="text-left"><span className="block">Valheim Server Manager 2.0.0</span><span className="block text-xs font-normal opacity-80">One package for server and client installation</span></span></a></Button></CardContent></Card></TabsContent></Tabs></div>
+  return <div className="space-y-6"><PageHeader page="settings" /><Tabs defaultValue="server"><TabsList className="grid w-full grid-cols-3 gap-1 group-data-horizontal/tabs:h-auto sm:inline-flex sm:w-fit [&_[data-slot=tabs-trigger]]:h-7"><TabsTrigger value="server">Server</TabsTrigger><TabsTrigger value="updates">Updates</TabsTrigger><TabsTrigger value="messages">Messages</TabsTrigger><TabsTrigger value="api">API tokens</TabsTrigger><TabsTrigger value="privacy">Privacy</TabsTrigger><TabsTrigger value="artifacts">Artifacts</TabsTrigger></TabsList><TabsContent value="server" className="space-y-4 pt-2"><ServerAccessSettingsCard /><ServerCharacterSettingsCard /></TabsContent><TabsContent value="updates" className="pt-2"><ManagerUpdateSettingsCard /></TabsContent><TabsContent value="messages" className="pt-2"><ServerMessagesSettingsCard /></TabsContent><TabsContent value="api" className="pt-2"><ApiTokensSettingsCard /></TabsContent><TabsContent value="privacy" className="pt-2"><Card><CardHeader><CardTitle>Privacy defaults</CardTitle><CardDescription>Collection remains narrow until explicitly enabled.</CardDescription></CardHeader><CardContent className="divide-y rounded-lg border bg-background/40 px-4">{[["Chat webhooks", "Disabled until explicitly filtered"], ["Inventory inspection", "Consent-based, on demand, never persisted"], ["Server character", "Optional; disabled in vanilla-compatible mode"], ["Private whispers", "Never captured"], ["Detailed telemetry", "Opt-in on each client"]].map(([label, value]) => <div className="flex flex-col justify-between gap-1 py-3 sm:flex-row sm:items-center" key={label}><span className="text-sm font-medium">{label}</span><span className="text-sm text-muted-foreground">{value}</span></div>)}</CardContent></Card></TabsContent><TabsContent value="artifacts" className="pt-2"><Card><CardHeader><CardTitle>Server Manager package</CardTitle><CardDescription>Install this package on the server. Clients need it only when managed-client mode is enabled.</CardDescription></CardHeader><CardContent><Button asChild className="h-auto justify-start p-4"><a href="/api/v1/downloads/plugin"><PackageCheck className="size-5" /><span className="text-left"><span className="block">Valheim Server Manager 2.0.0</span><span className="block text-xs font-normal opacity-80">One optional client package—no companion mod</span></span></a></Button></CardContent></Card></TabsContent></Tabs></div>
 }
 
 function Dashboard({ auth }: { auth: AuthState }) {
