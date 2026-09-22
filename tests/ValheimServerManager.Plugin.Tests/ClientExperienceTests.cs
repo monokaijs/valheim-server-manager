@@ -1,10 +1,20 @@
 using ValheimServerManager.ClientSupport;
+using ValheimServerManager.ServerSupport;
 using Xunit;
 
 namespace ValheimServerManager.Plugin.Tests;
 
 public sealed class ClientExperienceTests
 {
+    [Fact]
+    public void OptionalConnectionHooksAreDisabledForVanillaDefaults()
+    {
+        Assert.False(ConnectionPolicy.ShouldBufferWorldTraffic(false));
+        Assert.True(ConnectionPolicy.ShouldBufferWorldTraffic(true));
+        Assert.False(ConnectionPolicy.ShouldOverridePlayerLimit(ConnectionPolicy.VanillaPlayerLimit));
+        Assert.True(ConnectionPolicy.ShouldOverridePlayerLimit(20));
+    }
+
     [Fact]
     public void VanillaConnectionDoesNotDelaySpawnAndRetriesAreBounded()
     {

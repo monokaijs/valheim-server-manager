@@ -18,6 +18,7 @@ using HarmonyLib;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
+using ValheimServerManager.ServerSupport;
 
 namespace ValheimServerManager.Server;
 
@@ -88,9 +89,12 @@ public sealed class ServerPlugin : BaseUnityPlugin
         Patch(typeof(ClientModRelayPatch)); Patch(typeof(AdmissionPatch)); Patch(typeof(PeerInfoPatch)); Patch(typeof(CharacterIdPatch)); Patch(typeof(DisconnectPatch));
         Patch(typeof(WorldLoadPatch)); Patch(typeof(SaveStartPatch)); Patch(typeof(SaveCompletePatch)); Patch(typeof(GlobalKeyPatch));
         Patch(typeof(RaidPatch)); Patch(typeof(DayPatch)); Patch(typeof(SleepPatch)); Patch(typeof(BossDeathPatch)); Patch(typeof(ChatPatch));
-        Patch(typeof(PlayerLimitPeerInfoPatch)); Patch(typeof(PlayerLimitCountPatch));
-        Patch(typeof(PlayFabLobbyLimitPatch)); Patch(typeof(PlayFabNetworkLimitPatch));
-        Patch(typeof(SteamServerLimitPatch)); Patch(typeof(SteamLobbyLimitPatch));
+        if (ConnectionPolicy.ShouldOverridePlayerLimit(MaxPlayers))
+        {
+            Patch(typeof(PlayerLimitPeerInfoPatch)); Patch(typeof(PlayerLimitCountPatch));
+            Patch(typeof(PlayFabLobbyLimitPatch)); Patch(typeof(PlayFabNetworkLimitPatch));
+            Patch(typeof(SteamServerLimitPatch)); Patch(typeof(SteamLobbyLimitPatch));
+        }
         if (PublicIpPatch.TryConfigure(Environment.GetEnvironmentVariable("VSM_PUBLIC_IP"), out var publicIp))
         {
             Patch(typeof(PublicIpPatch));
@@ -795,7 +799,9 @@ public sealed class ServerPlugin : BaseUnityPlugin
         [HarmonyPriority(Priority.First)]
         private static void Prefix(ZNet __instance, ZRpc rpc, ref BufferedSocket __state)
         {
-            if (!__instance.IsServer() || rpc?.GetSocket() == null) return;
+            if (!__instance.IsServer()
+                || !ConnectionPolicy.ShouldBufferWorldTraffic(Instance?._serverCharactersEnabled?.Value == true)
+                || rpc?.GetSocket() == null) return;
             __state = new BufferedSocket(rpc.GetSocket());
             Traverse.Create(rpc).Field("m_socket").SetValue(__state);
         }
@@ -807,9 +813,9 @@ public sealed class ServerPlugin : BaseUnityPlugin
             var peer = PeerForRpc(__instance, rpc);
             try
             {
-                // Send the authoritative profile before releasing Valheim's world-data packets.
-                // Otherwise the client blocks in synchronous world generation and cannot process it.
-                if (Instance._serverCharactersEnabled.Value)
+                // A non-null state snapshots that server characters were enabled when this
+                // handshake began. Send the profile before releasing Valheim's world data.
+                if (__state != null)
                 {
                     InvokePeer(peer, "VSM_ServerPolicy", true, Instance._clientGraceSeconds.Value);
                     Instance.SendServerCharacter(peer);
@@ -818,12 +824,23 @@ public sealed class ServerPlugin : BaseUnityPlugin
             }
             finally
             {
-                if (__state != null)
-                {
-                    Traverse.Create(rpc).Field("m_socket").SetValue(__state.Original);
-                    __state.Release();
-                }
+                RestoreSocket(rpc, __state);
             }
+        }
+
+        // Harmony postfixes do not run when Valheim throws. Always restore the native
+        // socket so an optional VSM feature can never leave the connection intercepted.
+        private static Exception Finalizer(ZRpc rpc, BufferedSocket __state, Exception __exception)
+        {
+            RestoreSocket(rpc, __state);
+            return __exception;
+        }
+
+        private static void RestoreSocket(ZRpc rpc, BufferedSocket state)
+        {
+            if (rpc == null || state == null) return;
+            Traverse.Create(rpc).Field("m_socket").SetValue(state.Original);
+            state.Release();
         }
     }
     [HarmonyPatch(typeof(ZNet), "RPC_CharacterID")]
@@ -978,13 +995,13 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private static void SetCapacity(object target, string memberName)
     {
         if (target == null) return;
-        var property = AccessTools.Property(target.GetType(), memberName);
+        var property = target.GetType().GetProperty(memberName, AccessTools.all);
         if (property != null && property.CanWrite)
         {
             property.SetValue(target, Convert.ChangeType(MaxPlayers, property.PropertyType), null);
             return;
         }
-        var field = AccessTools.Field(target.GetType(), memberName);
+        var field = target.GetType().GetField(memberName, AccessTools.all);
         if (field != null) field.SetValue(target, Convert.ChangeType(MaxPlayers, field.FieldType));
     }
 }

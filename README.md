@@ -70,6 +70,8 @@ Server Manager synchronization owns `BepInEx/plugins/ValheimServerManagerManaged
 
 Players without mods can join by default. Under **Settings → Server → Client compatibility**, enable managed-client mode only when server-owned characters are wanted. The same defaults are configurable before first start:
 
+With server-owned characters disabled, VSM leaves Valheim's peer-info and world-data connection path untouched. Optional notices, telemetry, and manifest discovery never delay admission; only Valheim's native authentication/version rules and explicitly required managed mods can block a connection.
+
 ```env
 VSM_SERVER_CHARACTERS_ENABLED=false
 VSM_SERVER_CHARACTERS_ACCEPT_FIRST_JOIN=true

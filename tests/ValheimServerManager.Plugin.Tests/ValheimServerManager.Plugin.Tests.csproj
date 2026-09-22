@@ -11,5 +11,6 @@
     <ProjectReference Include="../../plugins/ValheimServerManager.Bootstrap/ValheimServerManager.Bootstrap.csproj" />
     <Compile Include="../../plugins/Shared/ClientHandshake.cs" Link="ClientHandshake.cs" />
     <Compile Include="../../plugins/Shared/ClientNotice.cs" Link="ClientNotice.cs" />
+    <Compile Include="../../plugins/Shared/ConnectionPolicy.cs" Link="ConnectionPolicy.cs" />
   </ItemGroup>
 </Project>
