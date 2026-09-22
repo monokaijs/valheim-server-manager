@@ -121,6 +121,83 @@ public sealed class CoreTests
     }
 
     [Theory]
+    [InlineData("Advize_PlantEverything.dll", "plugins/Advize-PlantEverything/Advize_PlantEverything.dll")]
+    [InlineData("assets/pieces.json", "plugins/Advize-PlantEverything/assets/pieces.json")]
+    [InlineData("plugins/Example.dll", "plugins/Example.dll")]
+    [InlineData("config/author.mod.cfg", "config/author.mod.cfg")]
+    [InlineData("BepInEx/plugins/Example.dll", "plugins/Example.dll")]
+    [InlineData("Package/BepInEx/patchers/Example.dll", "patchers/Example.dll")]
+    public void ModInstaller_MapsSupportedThunderstoreLayouts(string entry, string expected)
+    {
+        Assert.Equal(expected, ModService.PackageDestination(entry, "Advize", "PlantEverything"));
+    }
+
+    [Theory]
+    [InlineData("manifest.json")]
+    [InlineData("README.md")]
+    [InlineData("CHANGELOG.md")]
+    [InlineData("icon.png")]
+    [InlineData("LICENSE")]
+    public void ModInstaller_DoesNotInstallPackageMetadata(string entry)
+    {
+        Assert.Null(ModService.PackageDestination(entry, "Advize", "PlantEverything"));
+    }
+
+    [Fact]
+    public void ModInstaller_ReadsThunderstoreOwnerAsNamespace()
+    {
+        var package = JsonSerializer.Deserialize<ModService.ThunderstorePackage>("""
+            {"owner":"Advize","name":"PlantEverything","full_name":"Advize-PlantEverything","versions":[]}
+            """);
+        Assert.NotNull(package);
+        Assert.Equal("Advize", package.Namespace);
+    }
+
+    [Fact]
+    public async Task ModInstaller_InstallsRootDllAndSatisfiesBundledBepInExDependency()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "vsm-root-package-" + Guid.NewGuid().ToString("N"));
+        var archivePath = Path.Combine(root, "PlantEverything.zip");
+        var bepInEx = Path.Combine(root, "BepInEx");
+        Directory.CreateDirectory(bepInEx);
+        using (var archive = ZipFile.Open(archivePath, ZipArchiveMode.Create))
+        {
+            var manifest = archive.CreateEntry("manifest.json");
+            await using (var output = manifest.Open())
+                await JsonSerializer.SerializeAsync(output, new { name = "PlantEverything", version_number = "1.21.2", dependencies = new[] { "denikson-BepInExPack_Valheim-5.4.2350" } });
+            archive.CreateEntry("README.md");
+            archive.CreateEntry("icon.png");
+            var plugin = archive.CreateEntry("Advize_PlantEverything.dll");
+            await using var pluginOutput = plugin.Open();
+            await pluginOutput.WriteAsync(new byte[] { 1, 2, 3, 4 });
+        }
+
+        var services = new ServiceCollection();
+        services.AddDbContext<ManagerDbContext>(options => options.UseSqlite($"Data Source={Path.Combine(root, "manager.db")}"));
+        await using var provider = services.BuildServiceProvider();
+        await using (var scope = provider.CreateAsyncScope())
+            await scope.ServiceProvider.GetRequiredService<ManagerDbContext>().Database.EnsureCreatedAsync();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["VSM_BEPINEX_PATH"] = bepInEx,
+            ["VSM_DATA_PATH"] = Path.Combine(root, "manager"),
+            ["BEPINEX_PACK_VERSION"] = "5.4.2350"
+        }).Build();
+        var scopes = provider.GetRequiredService<IServiceScopeFactory>();
+        var audit = new AuditService(scopes, new Microsoft.AspNetCore.Http.HttpContextAccessor());
+        var service = new ModService(scopes, null!, new ServerState(null!), null!, null!, null!, audit, configuration);
+
+        await using (var input = File.OpenRead(archivePath))
+            await service.InstallUpload(input, "PlantEverything.zip", CancellationToken.None);
+
+        Assert.True(File.Exists(Path.Combine(bepInEx, "plugins", "manual-PlantEverything", "Advize_PlantEverything.dll")));
+        Assert.False(File.Exists(Path.Combine(bepInEx, "plugins", "manual-PlantEverything", "manifest.json")));
+        await using (var scope = provider.CreateAsyncScope())
+            Assert.Equal("1.21.2", (await scope.ServiceProvider.GetRequiredService<ManagerDbContext>().InstalledMods.SingleAsync()).Version);
+        Directory.Delete(root, true);
+    }
+
+    [Theory]
     [InlineData("Steam_76561198000000000")]
     [InlineData("PlayFab_AaBbCc123")]
     [InlineData("76561198000000000")]

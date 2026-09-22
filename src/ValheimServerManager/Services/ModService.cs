@@ -304,6 +304,37 @@ public sealed class ModService(
         return (string.Join('-', parts[..^2]), parts[^2], parts[^1]);
     }
 
+    internal static string? PackageDestination(string normalized, string packageNamespace, string name)
+    {
+        var segments = normalized.Split('/');
+        var bepInExIndex = Array.FindIndex(segments, segment => segment.Equals("BepInEx", StringComparison.OrdinalIgnoreCase));
+        if (bepInExIndex >= 0)
+        {
+            var relative = string.Join('/', segments[(bepInExIndex + 1)..]);
+            return string.IsNullOrWhiteSpace(relative) ? null : relative;
+        }
+
+        if (segments.Length == 1 && IsPackageMetadata(segments[0])) return null;
+        if (segments[0].Equals("plugins", StringComparison.OrdinalIgnoreCase) ||
+            segments[0].Equals("patchers", StringComparison.OrdinalIgnoreCase) ||
+            segments[0].Equals("config", StringComparison.OrdinalIgnoreCase)) return normalized;
+
+        var owner = SafePackageSegment(string.IsNullOrWhiteSpace(packageNamespace) ? "manual" : packageNamespace);
+        var package = SafePackageSegment(name);
+        return $"plugins/{owner}-{package}/{normalized}";
+    }
+
+    private static bool IsPackageMetadata(string fileName) =>
+        fileName.Equals("manifest.json", StringComparison.OrdinalIgnoreCase) ||
+        fileName.Equals("icon.png", StringComparison.OrdinalIgnoreCase) ||
+        fileName.Equals("README.md", StringComparison.OrdinalIgnoreCase) ||
+        fileName.Equals("CHANGELOG.md", StringComparison.OrdinalIgnoreCase) ||
+        fileName.Equals("LICENSE", StringComparison.OrdinalIgnoreCase) ||
+        fileName.Equals("LICENSE.md", StringComparison.OrdinalIgnoreCase) ||
+        fileName.Equals("LICENSE.txt", StringComparison.OrdinalIgnoreCase);
+
+    private static string SafePackageSegment(string value) => Regex.Replace(value, "[^A-Za-z0-9_]", "_");
+
     private static bool IsBepInEx(string packageNamespace, string name) =>
         name.Equals(BepInExPackage, StringComparison.OrdinalIgnoreCase) &&
         (string.IsNullOrWhiteSpace(packageNamespace) || packageNamespace.Equals(BepInExNamespace, StringComparison.OrdinalIgnoreCase));
@@ -329,10 +360,8 @@ public sealed class ModService(
             if (ArchiveSafety.IsSymbolicLink(entry.ExternalAttributes)) throw new InvalidDataException("Package contains a symbolic link.");
             expandedSize = checked(expandedSize + entry.Length);
             if (expandedSize > 1024L * 1024 * 1024) throw new InvalidDataException("Expanded package exceeds the 1 GiB limit.");
-            var index = normalized.IndexOf("BepInEx/", StringComparison.OrdinalIgnoreCase);
-            if (index < 0) continue;
-            var relative = normalized[(index + "BepInEx/".Length)..];
-            if (string.IsNullOrWhiteSpace(relative)) continue;
+            var relative = PackageDestination(normalized, packageNamespace, name);
+            if (relative is null) continue;
             _ = SafeDestination(relative);
             if (!seen.Add(relative)) throw new InvalidDataException($"Package contains a duplicate file: {relative}");
             var destination = SafeDestination(relative);
@@ -369,7 +398,7 @@ public sealed class ModService(
             }
         }
         finally { if (Directory.Exists(extractionRoot)) Directory.Delete(extractionRoot, true); }
-        if (files.Count == 0) throw new InvalidDataException("Package does not contain files under BepInEx/.");
+        if (files.Count == 0) throw new InvalidDataException("Package does not contain installable BepInEx files.");
         var hash = Convert.ToHexString(await SHA256.HashDataAsync(File.OpenRead(archivePath), cancellationToken)).ToLowerInvariant();
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();
@@ -513,8 +542,9 @@ public sealed class ModService(
         public string VersionNumber { get; set; } = "";
         public string[] Dependencies { get; set; } = [];
     }
-    private sealed class ThunderstorePackage
+    internal sealed class ThunderstorePackage
     {
+        [JsonPropertyName("owner")]
         public string Namespace { get; set; } = "";
         public string Name { get; set; } = "";
         [JsonPropertyName("full_name")]
@@ -523,7 +553,7 @@ public sealed class ModService(
         public bool IsDeprecated { get; set; }
         public List<ThunderstoreVersion> Versions { get; set; } = [];
     }
-    private sealed class ThunderstoreVersion
+    internal sealed class ThunderstoreVersion
     {
         [JsonPropertyName("version_number")]
         public string VersionNumber { get; set; } = "";
