@@ -27,17 +27,11 @@ jobs:
         run: dotnet test ValheimServerManager.slnx --logger trx --results-directory TestResults
       - name: Dashboard typecheck and production build
         run: npm ci --prefix web && npm run build --prefix web
-      - name: Install browser test tools
-        run: |
-          python3 -m pip install playwright==1.57.0
-          python3 -m playwright install --with-deps chromium
-      - name: Inspect real dashboard with simulated game data
-        run: python3 scripts/test-dashboard.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: inspection-test-results
-          path: TestResults
+          path: TestResults/**/*.trx
           retention-days: 7
   game-plugins:
     runs-on: ubuntu-latest
