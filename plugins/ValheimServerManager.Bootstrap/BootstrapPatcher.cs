@@ -32,9 +32,7 @@ public static class BootstrapPatcher
 
     private static void ClearRestartMarker()
     {
-        var patcherDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-        var bepinexRoot = patcherDirectory == null ? null : Directory.GetParent(patcherDirectory)?.FullName;
-        if (bepinexRoot == null) return;
+        var bepinexRoot = BootstrapSynchronizer.ResolveBepInExRoot(Assembly.GetExecutingAssembly().Location);
         var marker = Path.Combine(bepinexRoot, "valheim-server-manager", "restart-required");
         if (File.Exists(marker)) File.Delete(marker);
     }

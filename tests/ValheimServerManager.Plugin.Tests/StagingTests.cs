@@ -128,6 +128,18 @@ public sealed class StagingTests : IDisposable
         Assert.False(BootstrapSynchronizer.StageManifestLocked(_context, state, Json.Write(gameplayOnly)).Changed);
     }
 
+    [Theory]
+    [InlineData("patchers/ValheimServerManagerBootstrap.dll")]
+    [InlineData("patchers/Server_Manager/ValheimServerManagerBootstrap.dll")]
+    [InlineData("patchers/vendor/package/ValheimServerManagerBootstrap.dll")]
+    public void BootstrapFindsBepInExRootFromNestedModManagerFolders(string relativeAssemblyPath)
+    {
+        var bepInEx = Path.Combine(_root, "BepInEx");
+        var assemblyPath = Path.Combine(bepInEx, relativeAssemblyPath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(assemblyPath)!);
+        Assert.Equal(bepInEx, BootstrapSynchronizer.ResolveBepInExRoot(assemblyPath));
+    }
+
     private static BootstrapManifest Manifest()
     {
         using var stream = new MemoryStream();

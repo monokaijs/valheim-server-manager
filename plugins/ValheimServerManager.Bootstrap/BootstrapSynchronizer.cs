@@ -210,8 +210,7 @@ public static class BootstrapSynchronizer
     private static BootstrapContext CreateContext()
     {
         var patcherPath = Assembly.GetExecutingAssembly().Location;
-        var patcherDirectory = Path.GetDirectoryName(patcherPath) ?? throw new InvalidOperationException("Bootstrap assembly has no directory");
-        var bepinexRoot = Directory.GetParent(patcherDirectory)?.FullName ?? throw new InvalidOperationException("Cannot find BepInEx root");
+        var bepinexRoot = ResolveBepInExRoot(patcherPath);
         var configRoot = Path.Combine(bepinexRoot, "config", "ValheimServerManager");
         var stateRoot = Path.Combine(bepinexRoot, "valheim-server-manager");
         BootstrapLog.Initialize(stateRoot);
@@ -222,6 +221,15 @@ public static class BootstrapSynchronizer
             Path.Combine(stateRoot, "last-manifest.json"),
             Path.Combine(stateRoot, "pending-manifest.json"),
             BootstrapSettings.Load(Path.Combine(configRoot, "bootstrap.cfg")));
+    }
+
+    internal static string ResolveBepInExRoot(string assemblyPath)
+    {
+        var directory = new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(assemblyPath))
+            ?? throw new InvalidOperationException("Bootstrap assembly has no directory"));
+        for (var current = directory; current != null; current = current.Parent)
+            if (current.Name.Equals("BepInEx", StringComparison.OrdinalIgnoreCase)) return current.FullName;
+        throw new InvalidOperationException("Cannot find the BepInEx root above the bootstrap assembly");
     }
 
     private static BootstrapState LoadState(string statePath)
