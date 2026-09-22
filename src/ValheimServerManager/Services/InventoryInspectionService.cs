@@ -6,10 +6,7 @@ namespace ValheimServerManager.Services;
 public sealed record InspectionFrame(long Sequence, string PeerId, DateTimeOffset ReceivedAt,
     string Status, string? Error, JsonElement? Snapshot);
 
-/// <summary>
-/// Demand-driven, bounded, single-flight inventory reads. No background collection,
-/// persistence, event-bus publication, or webhook delivery takes place here.
-/// </summary>
+/// <summary>Demand-driven, bounded, single-flight reads; snapshots are never persisted or broadcast.</summary>
 public sealed class InventoryInspectionService(AgentGateway agent, ServerState state)
 {
     public static readonly TimeSpan SampleInterval = TimeSpan.FromMilliseconds(1250);
@@ -55,15 +52,46 @@ public sealed class InventoryInspectionService(AgentGateway agent, ServerState s
                 if (_samples.Count >= 64) throw new InvalidOperationException("Too many active inspection targets.");
                 _samples.Add(peer, sample = new Sample());
             }
-            // All viewers of the same player share one game RPC, including slow responses.
+            // Viewers of the same player share one RPC, including slow responses.
             if (sample.Pending is { IsCompleted: false }) pending = sample.Pending;
             else if (sample.Last is not null && sample.Generation == agent.Generation
                 && DateTimeOffset.UtcNow - sample.Last.ReceivedAt < TimeSpan.FromMilliseconds(1100))
                 pending = Task.FromResult(sample.Last);
             else pending = sample.Pending = Capture(peer, sample);
         }
-        // Cancel the viewer's wait, not the shared request belonging to other viewers.
         return pending.WaitAsync(cancellationToken);
+    }
+
+    // Client payloads are untrusted even after a compatible handshake. Reject malformed
+    // collection members and non-finite values rather than crashing an administrator's UI.
+    public static bool IsValidSnapshot(JsonElement value)
+    {
+        static bool Property(JsonElement obj, string key, JsonValueKind kind, out JsonElement result)
+        { result = default; return obj.ValueKind == JsonValueKind.Object && obj.TryGetProperty(key, out result) && result.ValueKind == kind; }
+        static bool Text(JsonElement obj, string key) => Property(obj, key, JsonValueKind.String, out var text) && text.GetString()!.Length <= 8192;
+        static bool Number(JsonElement obj, string key) => Property(obj, key, JsonValueKind.Number, out var number) && number.TryGetDouble(out var n) && double.IsFinite(n);
+        if (!Property(value, "ok", JsonValueKind.True, out _)
+            || !Property(value, "character", JsonValueKind.Object, out var character)
+            || !Property(value, "items", JsonValueKind.Array, out var items) || items.GetArrayLength() > 1024
+            || !Property(value, "icons", JsonValueKind.Object, out var icons)
+            || !Property(character, "skills", JsonValueKind.Array, out var skills) || skills.GetArrayLength() > 256) return false;
+        foreach (var key in new[] { "id", "name", "biome" }) if (!Text(character, key)) return false;
+        foreach (var key in new[] { "health", "maxHealth", "stamina", "maxStamina", "eitr", "maxEitr", "armor", "weight", "inventoryWidth", "inventoryHeight" })
+            if (!Number(character, key)) return false;
+        foreach (var skill in skills.EnumerateArray()) if (!Text(skill, "name") || !Number(skill, "level")) return false;
+        foreach (var item in items.EnumerateArray())
+        {
+            foreach (var key in new[] { "prefab", "name", "description", "type", "iconKey", "crafterId" }) if (!Text(item, key)) return false;
+            if (!Text(item, "crafterName") && !Property(item, "crafterName", JsonValueKind.Null, out _)) return false;
+            foreach (var key in new[] { "stack", "maxStack", "quality", "maxQuality", "durability", "maxDurability", "weight", "x", "y", "variant" })
+                if (!Number(item, key)) return false;
+            foreach (var key in new[] { "equipped", "teleportable" })
+                if (!Property(item, key, JsonValueKind.True, out _) && !Property(item, key, JsonValueKind.False, out _)) return false;
+        }
+        var count = 0;
+        foreach (var icon in icons.EnumerateObject())
+            if (++count > 1024 || icon.Value.ValueKind != JsonValueKind.String || icon.Value.GetString()!.Length > 200_000) return false;
+        return true;
     }
 
     private async Task<InspectionFrame> Capture(long peer, Sample sample)
@@ -83,16 +111,10 @@ public sealed class InventoryInspectionService(AgentGateway agent, ServerState s
             {
                 var result = await agent.Command("inventory.request", new { peerId = peer }, TimeSpan.FromSeconds(12));
                 if (generation != agent.Generation) { status = "disconnected"; error = "The server restarted during this sample."; }
-                else if (result.ValueKind == JsonValueKind.Object
-                    && result.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True
-                    && result.TryGetProperty("character", out var character) && character.ValueKind == JsonValueKind.Object
-                    && result.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
-                { status = "live"; snapshot = result.Clone(); }
+                else if (IsValidSnapshot(result)) { status = "live"; snapshot = result.Clone(); }
                 else
-                {
-                    error = result.TryGetProperty("error", out var message) && message.ValueKind == JsonValueKind.String
-                        ? message.GetString() : "The client could not produce a current inventory sample.";
-                }
+                    error = result.ValueKind == JsonValueKind.Object && result.TryGetProperty("error", out var message) && message.ValueKind == JsonValueKind.String
+                        ? message.GetString() : "The client returned an unavailable or malformed inventory sample.";
             }
         }
         catch (OperationCanceledException) { status = "stale"; error = "The inventory request timed out. Waiting for a fresh sample."; }
