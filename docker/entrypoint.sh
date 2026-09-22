@@ -50,6 +50,19 @@ if [[ ! -f /data/server/BepInEx/core/BepInEx.dll ]]; then
   rm -rf "$work"
 fi
 
+# Releases before 2.1 installed server and client components together under
+# plugins/ServerManager. Quarantine that bundle so its old runtime updater
+# cannot patch dedicated-server connections alongside the current agent.
+legacy_plugin_dir="/data/server/BepInEx/plugins/ServerManager"
+if [[ -f "$legacy_plugin_dir/ValheimServerManager.Server.dll" ||
+      -f "$legacy_plugin_dir/ValheimServerManagerRuntimeUpdater.dll" ]]; then
+  legacy_backup_root="/data/manager/legacy-plugin-backups"
+  mkdir -p "$legacy_backup_root"
+  legacy_backup="$legacy_backup_root/ServerManager-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  mv "$legacy_plugin_dir" "$legacy_backup"
+  printf 'Quarantined legacy Server Manager bundle at %s\n' "$legacy_backup"
+fi
+
 vsm_version="2.1.2"
 mkdir -p /data/server/BepInEx/plugins/ValheimServerManager /data/manager/downloads /data/manager/runtime
 dotnet build /app/plugins/ValheimServerManager.Server/ValheimServerManager.Server.csproj -c Release \
