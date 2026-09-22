@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim AS web-build
 WORKDIR /src/web
 COPY web/package*.json ./
-RUN npm install
+RUN npm ci
 COPY web/ ./
 RUN npm run build
 

@@ -1,6 +1,6 @@
 services:
   valheim-manager:
-    image: ${VSM_IMAGE:-valheim-server-manager:local}
+    image: ${VSM_IMAGE:-ghcr.io/monokaijs/valheim-server-manager:latest}
     build: .
     container_name: valheim-server-manager
     restart: unless-stopped

@@ -19,7 +19,8 @@ Requirements: Docker Engine with Compose, an x86-64 Linux host, and roughly 5 GB
 ```bash
 cp .env.example .env
 # Optional: edit the server name, world, ports, and password in .env.
-docker compose up --build -d
+docker compose pull
+docker compose up -d
 ```
 
 That is enough to start a private, passwordless, vanilla-compatible server. Open port `8080` for the dashboard and UDP `2456-2458` for Valheim. Set `VSM_PUBLIC_URL` before using Steam dashboard sign-in; the authenticated Steam64 ID must appear in `adminlist.txt` as either `Steam_<id>` or the numeric ID. Put the dashboard behind HTTPS before exposing it to the internet.
@@ -146,7 +147,7 @@ The application container intentionally has no Docker socket. Install the narrow
 sudo ./scripts/install-host-updater.sh /absolute/path/to/valheim-server-manager
 ```
 
-The updater timer reads only versioned requests from the persistent manager volume, accepts strict semantic release versions, builds the tagged GitHub source as a candidate image, and waits for Docker health validation. A failed build leaves the current deployment untouched; a failed startup restores the previous image. Update state and results remain visible in Settings → Updates and the audit log.
+The updater timer reads only versioned requests from the persistent manager volume, accepts strict semantic release versions, pulls the matching image from GitHub Container Registry, and waits for Docker health validation. It also downloads the tagged source to update the deployment's Compose file and host updater. A failed pull leaves the current deployment untouched; a failed startup restores the previous image. Update state and results remain visible in Settings → Updates and the audit log.
 
 ## Webhooks
 
@@ -186,9 +187,11 @@ Run the full Docker/SteamCMD/BepInEx handshake smoke test on an x86-64 Docker ho
 
 The smoke stack uses its own Compose project and volumes, waits for the plugin handshake, performs a controlled container restart, confirms a fresh handshake, then removes those test resources. Set `KEEP_SMOKE_STACK=true` to retain it for diagnosis.
 
-## Publish the Thunderstore package
+## Publishing releases
 
-The **Publish to Thunderstore** GitHub Actions workflow is manually triggered from the repository's Actions page. Choose whether to increment the latest published version's patch, minor, or major component. The workflow downloads the current Valheim dedicated-server and BepInEx references, builds the server agent with the calculated version, packages it as **Server Manager** (`Creaton-Server_Manager` on Thunderstore), and publishes it to the Valheim community. Its BepInEx plugin ID is `dev.creaton.valheim-server-manager`.
+The **Publish Manager Release** GitHub Actions workflow creates the Git tag and GitHub Release, publishes the matching Thunderstore package, and builds the x86-64 container image. Images are published to `ghcr.io/monokaijs/valheim-server-manager` with `X.Y.Z`, `vX.Y.Z`, and `latest` tags. The GHCR package must remain public so new installations and the host updater can pull it without registry credentials.
+
+The standalone **Publish to Thunderstore** workflow can also be manually triggered from the repository's Actions page. It downloads the current Valheim dedicated-server and BepInEx references, builds the server agent with the calculated version, packages it as **Server Manager** (`Creaton-Server_Manager` on Thunderstore), and publishes it to the Valheim community. Its BepInEx plugin ID is `dev.creaton.valheim-server-manager`.
 
 For the first release, the calculation starts from `thunderstore.toml`; each successful release records a `vX.Y.Z` Git tag that becomes the base for the next increment. The workflow authenticates with the repository's `THUNDERSTORE_TOKEN` Actions secret.
 
