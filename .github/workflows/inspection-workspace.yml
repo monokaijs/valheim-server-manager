@@ -1,58 +1,20 @@
-name: Inspection validation
+name: Build and inspect
 on:
   push:
-    branches: [feat/live-inspection-mod-policy]
+    branches: [main, feat/live-inspection-mod-policy]
   pull_request:
     branches: [main]
 permissions:
   contents: read
 concurrency:
   group: inspection-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      sha: ${{ steps.source.outputs.sha }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Apply verified source changes on feature branch
-        id: source
-        env:
-          BRANCH: feat/live-inspection-mod-policy
-        run: |
-          if test -f .github/inspection-patch-00.b64; then
-            test "$GITHUB_EVENT_NAME" = push
-            python3 - <<'PY'
-          import base64, hashlib, lzma, pathlib
-          parts = sorted(pathlib.Path('.github').glob('inspection-patch-*.b64'))
-          assert len(parts) == 7
-          encoded = ''.join(p.read_text().strip() for p in parts)
-          patch = lzma.decompress(base64.b64decode(encoded, validate=True))
-          assert hashlib.sha256(patch).hexdigest() == '9b01ff1fe1fc24e6d2b2867697fcedc480bc8efddaec0298c1db195a35478c89'
-          pathlib.Path('/tmp/inspection.patch').write_bytes(patch)
-          PY
-            git apply --check /tmp/inspection.patch
-            git apply /tmp/inspection.patch
-            git rm .github/inspection-patch-*.b64
-            git diff --check
-            test "$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" = "$GITHUB_SHA"
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git add .
-            git commit -m 'feat: enforce inventory sharing, live inspection desk, scoped files and client mod policies'
-            git push origin "HEAD:$BRANCH"
-          fi
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
   dashboard-and-tests:
-    needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
@@ -62,50 +24,39 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Regression tests
-        id: tests
-        continue-on-error: true
         run: dotnet test ValheimServerManager.slnx --logger trx --results-directory TestResults
-      - name: Dashboard install
-        id: install
-        continue-on-error: true
-        run: npm ci --prefix web
-      - name: Dashboard typecheck and build
-        id: dashboard
-        continue-on-error: true
-        run: npm run build --prefix web
+      - name: Dashboard typecheck and production build
+        run: npm ci --prefix web && npm run build --prefix web
+      - name: Install browser test tools
+        run: |
+          python3 -m pip install playwright==1.57.0
+          python3 -m playwright install --with-deps chromium
+      - name: Inspect real dashboard with simulated game data
+        run: python3 scripts/test-dashboard.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: inspection-test-results
           path: TestResults
-          retention-days: 3
-      - name: Require successful checks
-        env:
-          TESTS: ${{ steps.tests.outcome }}
-          INSTALL: ${{ steps.install.outcome }}
-          DASHBOARD: ${{ steps.dashboard.outcome }}
-        run: test "$TESTS" = success && test "$INSTALL" = success && test "$DASHBOARD" = success
+          retention-days: 7
   game-plugins:
-    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
       - name: Install SteamCMD dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y lib32gcc-s1 lib32stdc++6
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         id: references
         with:
           path: |
             .valheim/valheim_server_Data/Managed
             .bepinex/BepInExPack_Valheim/BepInEx
           key: inspection-game-references-2026-09-23
-      - name: Acquire current game and BepInEx references
+      - name: Acquire game and BepInEx references
         if: steps.references.outputs.cache-hit != 'true'
         run: |
           mkdir -p .steamcmd .valheim .bepinex
@@ -117,8 +68,17 @@ jobs:
           test -f .valheim/valheim_server_Data/Managed/assembly_valheim.dll
           curl --fail --location --retry 3 https://thunderstore.io/package/download/denikson/BepInExPack_Valheim/5.4.2350/ -o /tmp/bepinex.zip
           unzip -q /tmp/bepinex.zip -d .bepinex
+      - uses: actions/cache/save@v4
+        if: steps.references.outputs.cache-hit != 'true'
+        with:
+          path: |
+            .valheim/valheim_server_Data/Managed
+            .bepinex/BepInExPack_Valheim/BepInEx
+          key: inspection-game-references-2026-09-23
       - name: Compile server, client and runtime updater
         run: |
+          result=0
           for project in Server Client RuntimeUpdater; do
-            dotnet build "plugins/ValheimServerManager.$project/ValheimServerManager.$project.csproj" -c Release -p:ValheimManaged="$PWD/.valheim/valheim_server_Data/Managed" -p:BepInExRoot="$PWD/.bepinex/BepInExPack_Valheim/BepInEx"
+            dotnet build "plugins/ValheimServerManager.$project/ValheimServerManager.$project.csproj" -c Release -p:ValheimManaged="$PWD/.valheim/valheim_server_Data/Managed" -p:BepInExRoot="$PWD/.bepinex/BepInExPack_Valheim/BepInEx" || result=1
           done
+          exit "$result"
