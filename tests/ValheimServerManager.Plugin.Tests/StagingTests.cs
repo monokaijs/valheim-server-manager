@@ -109,6 +109,25 @@ public sealed class StagingTests : IDisposable
         Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, state, Json.Write(manifest)).Changed);
     }
 
+    [Fact]
+    public void GameplayOnlyManifestStopsTrackingServerProvidedRuntimeUpdater()
+    {
+        var runtime = RuntimeManifest();
+        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, new BootstrapState(), Json.Write(runtime)).Changed);
+        BootstrapSynchronizer.ApplyPendingLocked(_context);
+        var withRuntime = Json.ReadFile<BootstrapState>(_context.StatePath);
+        Assert.NotEmpty(withRuntime.InfrastructureHashes);
+
+        var gameplayOnly = Manifest();
+        gameplayOnly.Revision = new string('d', 64);
+        Assert.True(BootstrapSynchronizer.StageManifestLocked(_context, withRuntime, Json.Write(gameplayOnly)).Changed);
+        BootstrapSynchronizer.ApplyPendingLocked(_context);
+
+        var state = Json.ReadFile<BootstrapState>(_context.StatePath);
+        Assert.Empty(state.InfrastructureHashes);
+        Assert.False(BootstrapSynchronizer.StageManifestLocked(_context, state, Json.Write(gameplayOnly)).Changed);
+    }
+
     private static BootstrapManifest Manifest()
     {
         using var stream = new MemoryStream();

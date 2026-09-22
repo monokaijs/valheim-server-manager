@@ -33,7 +33,8 @@ public sealed class ClientModManifestService(IServiceScopeFactory scopes, IConfi
             && enabled.Equals("true", StringComparison.OrdinalIgnoreCase);
         if (!serverCharactersEnabled && requiredMods.Count == 0) return "";
 
-        var packages = new List<ClientManifestPackage> { await Runtime(cancellationToken) };
+        var packages = new List<ClientManifestPackage>();
+        if (serverCharactersEnabled) packages.Add(await Runtime(cancellationToken));
         foreach (var mod in requiredMods)
         {
             packages.Add(new ClientManifestPackage(

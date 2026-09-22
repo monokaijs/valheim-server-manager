@@ -423,7 +423,7 @@ public static class BootstrapSynchronizer
         var hasRuntime = manifest.Packages.Any(package =>
             package.Namespace.Equals("Creaton", StringComparison.OrdinalIgnoreCase)
             && package.PackageName.Equals("Server_Manager", StringComparison.OrdinalIgnoreCase));
-        if (!hasRuntime) return hashes;
+        if (!hasRuntime) return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         const string relative = "plugins/ValheimServerManager/ValheimServerManagerRuntimeUpdater.dll";
         var source = Path.Combine(managedPlugins, "Creaton-Server_Manager", "ValheimServerManager", "ValheimServerManagerRuntimeUpdater.dll");

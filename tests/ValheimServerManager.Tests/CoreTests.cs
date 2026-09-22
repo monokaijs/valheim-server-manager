@@ -498,12 +498,9 @@ public sealed class CoreTests
         var service = provider.GetRequiredService<ClientModManifestService>();
         using var initial = JsonDocument.Parse(await service.BuildJson());
         var packages = initial.RootElement.GetProperty("packages");
-        Assert.Equal(2, packages.GetArrayLength());
-        Assert.False(string.IsNullOrWhiteSpace(packages[0].GetProperty("contentBase64").GetString()));
-        Assert.Equal("", packages[0].GetProperty("downloadUrl").GetString());
-        Assert.Equal("Creaton-Server_Manager-2.1.1", packages[0].GetProperty("coordinate").GetString());
-        Assert.Equal(new FileInfo(runtimePackage).Length, packages[0].GetProperty("fileSize").GetInt64());
-        Assert.Equal(64, packages[0].GetProperty("sha256").GetString()!.Length);
+        Assert.Single(packages.EnumerateArray());
+        Assert.Equal("Author-GameplayMod-1.2.3", packages[0].GetProperty("coordinate").GetString());
+        Assert.Equal(JsonValueKind.Null, packages[0].GetProperty("contentBase64").ValueKind);
         Assert.Equal(64, initial.RootElement.GetProperty("revision").GetString()!.Length);
 
         Guid modId;
@@ -519,7 +516,11 @@ public sealed class CoreTests
             await db.SaveChangesAsync();
         }
         using var serverOnly = JsonDocument.Parse(await service.BuildJson());
-        Assert.Single(serverOnly.RootElement.GetProperty("packages").EnumerateArray());
+        var serverCharacterPackages = serverOnly.RootElement.GetProperty("packages");
+        Assert.Single(serverCharacterPackages.EnumerateArray());
+        Assert.Equal("Creaton-Server_Manager-2.1.1", serverCharacterPackages[0].GetProperty("coordinate").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(serverCharacterPackages[0].GetProperty("contentBase64").GetString()));
+        Assert.Equal(new FileInfo(runtimePackage).Length, serverCharacterPackages[0].GetProperty("fileSize").GetInt64());
         Directory.Delete(root, true);
     }
 
