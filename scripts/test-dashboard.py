@@ -23,7 +23,7 @@ items = [dict(prefab=name.replace(' ', ''), name=name, description='Simulated in
 snapshot = dict(ok=True, capturedAt='2026-09-23T02:05:00Z', character=character, items=items, icons={})
 files = {'example.mod/recipes/items.yml': 'recipes:\n  sword:\n    enabled: true\n'}
 revision = 'a' * 64
-streams, cancelled, errors = [], [], []
+streams, cancelled, closed, errors = [], [], [], []
 
 def api(route):
     global revision
@@ -66,8 +66,15 @@ def socket(ws):
                 assert value['target'] == 'WatchPlayer'
                 streams.append((ws, value['invocationId'], value['arguments'][0]))
                 emit(len(streams))
-            elif value.get('type') == 5: cancelled.append(value['invocationId'])
+            elif value.get('type') == 5: cancelled.append((ws, value['invocationId']))
     ws.on_message(message)
+    ws.on_close(lambda code, reason: closed.append(ws))
+
+def stopped(stream):
+    # Disposing then stopping a dedicated SignalR connection can close the transport
+    # before its cancellation frame flushes. Either terminates this exact server stream.
+    ws, invocation, _ = stream
+    return ws in closed or (ws, invocation) in cancelled
 
 def emit(sequence, health=None):
     ws, invocation, peer = streams[-1]
@@ -96,10 +103,11 @@ try:
         page.screenshot(path=str(OUT / 'inspection-desktop.png'))
         emit(10, 89)
         expect(dialog.get_by_role('meter', name='Health')).to_have_attribute('aria-valuenow', '89')
+        watching = streams[-1]
         dialog.get_by_role('button', name='Pause', exact=True).click()
         expect(dialog.get_by_text('Paused', exact=True)).to_be_visible()
-        page.wait_for_timeout(250)
-        assert cancelled, 'Pause did not cancel the stream'
+        page.wait_for_timeout(500)
+        assert stopped(watching), 'Pause left the inspection stream open'
         count = len(streams)
         dialog.get_by_role('button', name='Resume', exact=True).click()
         expect(dialog.get_by_role('meter', name='Health')).to_have_attribute('aria-valuenow', '127')
@@ -107,11 +115,13 @@ try:
         dialog.get_by_role('tab', name='Skills', exact=True).click()
         expect(dialog.get_by_text('Swords', exact=True)).to_be_visible()
         dialog.get_by_role('tab', name='Inventory', exact=True).click()
+        watching = streams[-1]
         dialog.get_by_role('button', name='Freya Inspection ready').click()
         expect(dialog.get_by_role('heading', name='Freya', exact=True)).to_be_visible()
         expect(dialog.get_by_role('meter', name='Health')).to_have_attribute('aria-valuenow', '127')
         assert streams[-1][2] == '43'
         page.wait_for_timeout(5600)
+        assert stopped(watching), 'Switching players left the old stream open'
         expect(dialog.get_by_text('Stale', exact=True)).to_be_visible()
         page.set_viewport_size(dict(width=390, height=844))
         emit(20)
@@ -119,10 +129,10 @@ try:
         box = dialog.bounding_box()
         assert box and box['x'] >= 0 and box['x'] + box['width'] <= 391
         page.screenshot(path=str(OUT / 'inspection-mobile.png'))
-        count = len(cancelled)
+        watching = streams[-1]
         dialog.get_by_role('button', name='Close', exact=True).click()
-        page.wait_for_timeout(250)
-        assert len(cancelled) > count, 'Closing did not cancel the stream'
+        page.wait_for_timeout(500)
+        assert stopped(watching), 'Closing left the inspection stream open'
         page.set_viewport_size(dict(width=1600, height=1000))
         page.get_by_role('button', name='Files', exact=True).click()
         page.get_by_role('button', name='recipes', exact=True).click()
