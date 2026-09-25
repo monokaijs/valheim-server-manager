@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.3.0
 
 - Removed the Server Manager notice panel from active gameplay. Welcome messages, broadcasts, and moderation reasons use Valheim's built-in HUD; persistent notices remain available at the menu.
 - Updated the BepInExPack Valheim dependency to 5.4.2351 so the client package works with current mod requirements.
