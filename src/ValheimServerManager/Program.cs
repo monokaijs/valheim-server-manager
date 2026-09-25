@@ -67,6 +67,8 @@ builder.Services.AddSingleton<ModConfigService>();
 builder.Services.AddSingleton<ManagerUpdateService>();
 builder.Services.AddSingleton<ProcessSupervisor>();
 builder.Services.AddSingleton<SteamAuthService>();
+builder.Services.AddSingleton<SteamProfileService>();
+builder.Services.AddSingleton<PlayerDirectoryService>();
 builder.Services.AddScoped<SteamAdminCookieEvents>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProcessSupervisor>());
 builder.Services.AddHostedService<WebhookDispatcher>();
@@ -105,6 +107,11 @@ using (var scope = app.Services.CreateScope())
         );
         CREATE INDEX IF NOT EXISTS "IX_JoinRequests_Status_LastAttemptAt" ON "JoinRequests" ("Status", "LastAttemptAt");
         CREATE UNIQUE INDEX IF NOT EXISTS "IX_JoinRequests_PendingPlatform" ON "JoinRequests" ("PlatformId") WHERE "Status" = 'pending';
+        CREATE TABLE IF NOT EXISTS "KnownPlayers" (
+            "PlatformId" TEXT NOT NULL CONSTRAINT "PK_KnownPlayers" PRIMARY KEY,
+            "Name" TEXT NOT NULL,
+            "LastSeenAt" TEXT NOT NULL
+        );
         """);
     scope.ServiceProvider.GetRequiredService<ServerState>().RestartRequired = await db.ManagerSettings.AnyAsync(x =>
         (x.Key == "mods.pending" || x.Key == "configs.pending") && x.Value == "true");
@@ -185,6 +192,8 @@ var api = app.MapGroup("/api/v1").RequireAuthorization();
 api.MapModFiles();
 api.MapGet("/status", (ServerState state) => Results.Ok(state.Snapshot()));
 api.MapGet("/players", (ServerState state) => Results.Ok(state.Players));
+api.MapGet("/player-directory", async (PlayerDirectoryService directory, CancellationToken ct) => Results.Ok(await directory.List(ct)));
+api.MapGet("/steam-profiles", async (string? ids, SteamProfileService profiles, CancellationToken ct) => Results.Ok(await profiles.Get(ids, ct)));
 api.MapPost("/players/{peerId:long}/kick", async (long peerId, ModerationRequest request, AgentGateway agent, ServerMessageService messages, ServerState state, AuditService audit, CancellationToken ct) =>
 {
     var reason = ServerMessageService.NormalizeReason(request.Reason);

@@ -10,7 +10,7 @@ namespace ValheimServerManager.Services;
 
 public sealed class AgentGateway(ServerState state, EventBus events, ClientModManifestService clientMods, JoinRequestService joinRequests,
     PluginRegistryService pluginRegistry, ServerMessageService serverMessages, ServerCharacterSettingsService characterSettings,
-    IConfiguration config, ILogger<AgentGateway> logger)
+    PlayerDirectoryService directory, IConfiguration config, ILogger<AgentGateway> logger)
 {
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
@@ -43,8 +43,11 @@ public sealed class AgentGateway(ServerState state, EventBus events, ClientModMa
         try { await ReceiveLoop(socket, context.RequestAborted); }
         finally
         {
-            Interlocked.CompareExchange(ref _socket, null, socket);
-            await state.SetAgent(false);
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _socket, null, socket), socket))
+            {
+                await state.SetAgent(false);
+                await state.ReplacePlayers([]);
+            }
             foreach (var item in _pending.Values) item.TrySetException(new IOException("Server agent disconnected."));
             _pending.Clear();
         }
@@ -132,6 +135,8 @@ public sealed class AgentGateway(ServerState state, EventBus events, ClientModMa
                     {
                         var parsed = players.Deserialize<List<PlayerInfo>>(JsonOptions) ?? [];
                         await state.ReplacePlayers(parsed);
+                        try { await directory.Record(parsed, cancellationToken); }
+                        catch (Exception error) when (error is not OperationCanceledException) { logger.LogWarning(error, "Could not save player history."); }
                     }
                     break;
                 case "pluginRegistry":

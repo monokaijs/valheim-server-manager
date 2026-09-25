@@ -91,6 +91,13 @@ public sealed class JoinRequestRecord
     public string CorrelationId { get; set; } = "";
 }
 
+public sealed class KnownPlayer
+{
+    public string PlatformId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public DateTimeOffset LastSeenAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
 public sealed class ManagerDbContext(DbContextOptions<ManagerDbContext> options)
     : DbContext(options)
 {
@@ -101,6 +108,7 @@ public sealed class ManagerDbContext(DbContextOptions<ManagerDbContext> options)
     public DbSet<ManagerSetting> ManagerSettings => Set<ManagerSetting>();
     public DbSet<ApiToken> ApiTokens => Set<ApiToken>();
     public DbSet<JoinRequestRecord> JoinRequests => Set<JoinRequestRecord>();
+    public DbSet<KnownPlayer> KnownPlayers => Set<KnownPlayer>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -111,5 +119,6 @@ public sealed class ManagerDbContext(DbContextOptions<ManagerDbContext> options)
         builder.Entity<InstalledMod>().HasIndex(x => new { x.Namespace, x.Name }).IsUnique();
         builder.Entity<ApiToken>().HasIndex(x => x.TokenHash).IsUnique();
         builder.Entity<JoinRequestRecord>().HasIndex(x => new { x.Status, x.LastAttemptAt });
+        builder.Entity<KnownPlayer>().HasKey(x => x.PlatformId);
     }
 }
