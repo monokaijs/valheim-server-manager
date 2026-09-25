@@ -92,7 +92,7 @@ if [[ -f "$legacy_plugin_dir/ValheimServerManager.Server.dll" ||
   printf 'Quarantined legacy Server Manager bundle at %s\n' "$legacy_backup"
 fi
 
-vsm_version="2.3.0"
+vsm_version="2.3.1"
 mkdir -p /data/server/BepInEx/plugins/ValheimServerManager /data/manager/downloads
 dotnet build /app/plugins/ValheimServerManager.Server/ValheimServerManager.Server.csproj -c Release \
   -p:ValheimManaged=/data/server/valheim_server_Data/Managed -p:BepInExRoot=/data/server/BepInEx \
