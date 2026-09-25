@@ -45,6 +45,8 @@ internal sealed class NoticeOverlay
 
     public void Draw()
     {
+        // Keep the custom panel at the menu; active play uses Valheim's message HUD.
+        if (_playerReady) return;
         var notice = _queue.Current;
         var showProgress = !string.IsNullOrEmpty(_progress) && Time.unscaledTime - _progressSince >= 1f;
         if (notice == null && !showProgress) return;
@@ -70,7 +72,6 @@ internal sealed class NoticeOverlay
             _panelHeight = Mathf.Min(height - 48f, _headerHeight + Mathf.Min(_bodyHeight, modal ? 300f : 170f) + (modal ? 92f : 54f));
             if (modal)
             {
-                Fill(new Rect(0, 0, width, height), new Color(0f, 0f, 0f, .72f));
                 GUI.ModalWindow(0x56534D, new Rect((width - _panelWidth) / 2f, (height - _panelHeight) / 2f, _panelWidth, _panelHeight),
                     _ => DrawPanel(title, message, true), GUIContent.none, GUIStyle.none);
             }

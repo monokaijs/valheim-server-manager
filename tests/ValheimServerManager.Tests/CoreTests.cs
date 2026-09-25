@@ -103,6 +103,8 @@ public sealed class CoreTests
     [InlineData("5.4.2350", "5.4.2202", true)]
     [InlineData("5.4.2350", "5.4.2350", true)]
     [InlineData("5.4.2202", "5.4.2350", false)]
+    [InlineData("5.4.2351", "5.4.2350", true)]
+    [InlineData("5.4.2350", "5.4.2351", false)]
     [InlineData("custom", "custom", true)]
     [InlineData("custom", "other", false)]
     public void ModInstaller_ValidatesBundledDependencyVersions(string installed, string required, bool expected)
@@ -164,7 +166,7 @@ public sealed class CoreTests
         {
             var manifest = archive.CreateEntry("manifest.json");
             await using (var output = manifest.Open())
-                await JsonSerializer.SerializeAsync(output, new { name = "PlantEverything", version_number = "1.21.2", dependencies = new[] { "denikson-BepInExPack_Valheim-5.4.2350" } });
+                await JsonSerializer.SerializeAsync(output, new { name = "PlantEverything", version_number = "1.21.2", dependencies = new[] { "denikson-BepInExPack_Valheim-5.4.2351" } });
             archive.CreateEntry("README.md");
             archive.CreateEntry("icon.png");
             var plugin = archive.CreateEntry("Advize_PlantEverything.dll");
@@ -181,7 +183,7 @@ public sealed class CoreTests
         {
             ["VSM_BEPINEX_PATH"] = bepInEx,
             ["VSM_DATA_PATH"] = Path.Combine(root, "manager"),
-            ["BEPINEX_PACK_VERSION"] = "5.4.2350"
+            ["BEPINEX_PACK_VERSION"] = "5.4.2351"
         }).Build();
         var scopes = provider.GetRequiredService<IServiceScopeFactory>();
         var audit = new AuditService(scopes, new Microsoft.AspNetCore.Http.HttpContextAccessor());

@@ -24,7 +24,8 @@ public sealed class ModService(
     internal const string ServerManagerPackage = "Server_Manager";
     private readonly string _bepInEx = config["VSM_BEPINEX_PATH"] ?? "/data/server/BepInEx";
     private readonly string _managerData = config["VSM_DATA_PATH"] ?? "/data/manager";
-    private readonly string _bepInExPackVersion = config["BEPINEX_PACK_VERSION"] ?? "5.4.2350";
+    private readonly string _bepInExPackVersion = config["BEPINEX_PACK_VERSION"]
+        ?? File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "bepinex-pack.version")).Trim();
     private string RollbackRoot => Path.Combine(_managerData, "pending-mod-rollback");
     private readonly SemaphoreSlim _gate = new(1, 1);
     private List<ThunderstorePackage>? _catalog;
@@ -255,7 +256,7 @@ public sealed class ModService(
             if (!isDependency)
                 throw new InvalidOperationException($"{packageKey} is managed by the Server Manager container and cannot be installed from the mod catalog.");
             if (IsBepInEx(packageNamespace, name) && !VersionAtLeast(_bepInExPackVersion, version))
-                throw new InvalidOperationException($"{packageKey} {version} is required, but this container bundles older version {_bepInExPackVersion}. Update the Server Manager image first.");
+                throw new InvalidOperationException($"{packageKey} {version} is required, but this server has {_bepInExPackVersion}. Restart Server Manager to update BepInExPack, then retry. If BEPINEX_PACK_VERSION is set, raise or remove that override.");
             return;
         }
         if (constraints.TryGetValue(packageKey, out var requiredVersion) && !requiredVersion.Equals(version, StringComparison.OrdinalIgnoreCase))

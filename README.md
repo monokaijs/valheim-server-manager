@@ -25,7 +25,7 @@ docker compose up -d
 
 That starts a private, passwordless server with inventory-sharing admission enabled. Players need the Server Manager runtime with inventory sharing enabled to stay connected. Open port `8080` for the dashboard and UDP `2456-2458` for Valheim. Set `VSM_PUBLIC_URL` before using Steam dashboard sign-in; the authenticated Steam64 ID must appear in `adminlist.txt` as either `Steam_<id>` or the numeric ID. Put the dashboard behind HTTPS before exposing it to the internet.
 
-The first start takes several minutes because it downloads Valheim, installs BepInEx, and compiles both plugins. Game, world, manager, log, and BepInEx data live in named Docker volumes.
+The first start takes several minutes because it downloads Valheim, installs BepInEx, and compiles both plugins. Game, world, manager, log, and BepInEx data live in named Docker volumes. Each container start checks Thunderstore for a newer BepInExPack and upgrades its managed core and launcher files on the persistent server volume before building the plugins; existing mod plugins and BepInEx config are preserved. Set `BEPINEX_PACK_VERSION` only if you need to pin a specific pack release.
 
 ## Password and whitelist access
 

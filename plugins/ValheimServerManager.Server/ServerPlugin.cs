@@ -262,8 +262,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
                     var message = ((string)data["message"] ?? "").Trim();
                     foreach (var peer in ZNet.instance.GetPeers())
                     {
-                        if (_companions.ContainsKey(peer.m_uid)) InvokePeer(peer, "VSM_AdminNotice", "Server notice", message);
-                        else ZRoutedRpc.instance.InvokeRoutedRPC(peer.m_uid, "ShowMessage", 2, message);
+                        ZRoutedRpc.instance.InvokeRoutedRPC(peer.m_uid, "ShowMessage", 2, message);
                     }
                     Event("admin.broadcast", new { message }); result = new { ok = true }; break;
                 case "player.kick": result = Kick(data); break;
@@ -378,7 +377,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private void ScheduleKick(ZNetPeer peer, string title, string message, string reason, string eventType)
     {
         InvokePeer(peer, "VSM_AdminNotice", title, message);
-        if (!_companions.ContainsKey(peer.m_uid)) ZRoutedRpc.instance?.InvokeRoutedRPC(peer.m_uid, "ShowMessage", 2, message);
+        ZRoutedRpc.instance?.InvokeRoutedRPC(peer.m_uid, "ShowMessage", 2, message);
         _scheduledKicks[peer.m_uid] = new ScheduledKick { Due = DateTime.UtcNow.AddSeconds(3) };
         Event(eventType, new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), reason, message });
     }
@@ -709,7 +708,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         Reply(_saveRequestId, ok ? (object)new { ok = true, message = "World save completed." } : new { ok = false, error = error ?? "World save failed." });
         _saveRequestId = null;
     }
-    internal void Joined(ZNetPeer peer) { if (peer == null) return; CompletePendingClientHello(peer); if (string.IsNullOrEmpty(peer.m_playerName) || _joined.ContainsKey(peer.m_uid)) return; _joined[peer.m_uid] = DateTime.UtcNow; InvokePeer(peer, "VSM_AdminNotice", "Welcome", Render(_welcomeMessage, peer.m_playerName)); Event("player.joined", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), peerId = peer.m_uid }); }
+    internal void Joined(ZNetPeer peer) { if (peer == null) return; CompletePendingClientHello(peer); if (string.IsNullOrEmpty(peer.m_playerName) || _joined.ContainsKey(peer.m_uid)) return; _joined[peer.m_uid] = DateTime.UtcNow; ZRoutedRpc.instance?.InvokeRoutedRPC(peer.m_uid, "ShowMessage", 2, Render(_welcomeMessage, peer.m_playerName)); Event("player.joined", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), peerId = peer.m_uid }); }
     internal void AdmissionChecked(ZNet znet, string hostName, string playerName, bool allowed)
     {
         if (allowed || znet == null || !znet.IsServer() || string.IsNullOrWhiteSpace(hostName)) return;

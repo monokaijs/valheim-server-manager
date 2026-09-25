@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Removed the Server Manager notice panel from active gameplay. Welcome messages, broadcasts, and moderation reasons use Valheim's built-in HUD; persistent notices remain available at the menu.
+- Updated the BepInExPack Valheim dependency to 5.4.2351 so the client package works with current mod requirements.
+- The Docker manager now checks for newer BepInExPack releases at startup and upgrades existing server volumes while preserving installed mods and configuration. Release checks detect stale package dependencies.
+
 ## 2.2.3
 
 - Required the Server Manager client runtime and inventory sharing for every server player. New client installs enable sharing by default; existing disabled settings still refuse sharing and are rejected after the grace period.

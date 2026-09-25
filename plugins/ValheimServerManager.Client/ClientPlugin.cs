@@ -134,10 +134,9 @@ public sealed class ClientPlugin : BaseUnityPlugin
     {
         if (_inspectionPolicy == required) return;
         _inspectionPolicy = required;
-        if (!required) return;
-        QueueAdminNotice("Inventory inspection required", _allowInventory.Value
-            ? "This realm requires live, read-only inventory and character inspection by authenticated administrators. Your inventory-sharing permission is enabled. Inspection snapshots are not saved or forwarded to webhooks."
-            : "This realm requires live inventory and character inspection by authenticated administrators. Enable Privacy > AllowInventoryInspection in the Server Manager client configuration and reconnect, or choose another realm. Your privacy setting has not been changed; this connection will be refused after the grace period.");
+        if (!required || _allowInventory.Value) return;
+        QueueAdminNotice("Inventory inspection required",
+            "This realm requires live inventory and character inspection by authenticated administrators. Enable Privacy > AllowInventoryInspection in the Server Manager client configuration and reconnect, or choose another realm. Your privacy setting has not been changed; this connection will be refused after the grace period.");
     }
 
     private void OnServerPolicy(bool serverCharacters, int timeoutSeconds)
@@ -253,7 +252,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void OnGUI()
     {
-        _notices.Draw();
+        if (Player.m_localPlayer == null) _notices.Draw();
     }
 
     private void ApplyServerProfile()

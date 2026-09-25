@@ -2,7 +2,20 @@
 set -euo pipefail
 
 mkdir -p /data/server /data/worlds /data/manager /data/logs /opt/steamcmd
-bepinex_pack_version="${BEPINEX_PACK_VERSION:-5.4.2350}"
+bepinex_pack_version="${BEPINEX_PACK_VERSION:-$(cat /app/bepinex-pack.version)}"
+if [[ -z "${BEPINEX_PACK_VERSION:-}" ]]; then
+  # Pick up pack-only Thunderstore releases without waiting for a new image.
+  if pack_json="$(curl -fsSL --max-time 10 'https://thunderstore.io/api/experimental/package/denikson/BepInExPack_Valheim/' 2>/dev/null)"; then
+    latest_pack="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["latest"]["version_number"])' <<<"$pack_json" 2>/dev/null || true)"
+    if [[ "$latest_pack" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && dpkg --compare-versions "$latest_pack" ge "$bepinex_pack_version"; then
+      bepinex_pack_version="$latest_pack"
+    fi
+  fi
+fi
+if [[ ! "$bepinex_pack_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Invalid BepInExPack version: $bepinex_pack_version" >&2
+  exit 1
+fi
 
 if [[ -z "${VSM_AGENT_TOKEN:-}" ]]; then
   if [[ -f /data/manager/agent-token ]]; then
@@ -42,13 +55,29 @@ if [[ "${VSM_UPDATE_ON_START:-true}" == "true" || ! -x /data/server/valheim_serv
   /opt/steamcmd/steamcmd.sh +force_install_dir /data/server +login anonymous +app_update 896660 +quit
 fi
 
-if [[ ! -f /data/server/BepInEx/core/BepInEx.dll ]]; then
-  work="$(mktemp -d)"
-  curl -fsSL "https://thunderstore.io/package/download/denikson/BepInExPack_Valheim/$bepinex_pack_version/" -o "$work/bepinex.zip"
-  unzip -q "$work/bepinex.zip" -d "$work/unpacked"
-  cp -a "$work/unpacked/BepInExPack_Valheim/." /data/server/
-  rm -rf "$work"
+installed_pack_version=""
+if [[ -f /data/server/BepInEx/core/BepInEx.dll && -f /data/server/BepInEx/.vsm-pack-version ]]; then
+  installed_pack_version="$(cat /data/server/BepInEx/.vsm-pack-version)"
 fi
+if [[ "$installed_pack_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && dpkg --compare-versions "$installed_pack_version" ge "$bepinex_pack_version"; then
+  bepinex_pack_version="$installed_pack_version"
+else
+  bepinex_work="$(mktemp -d)"
+  trap 'rm -rf "$bepinex_work"' EXIT
+  if curl -fsSL --retry 3 "https://thunderstore.io/package/download/denikson/BepInExPack_Valheim/$bepinex_pack_version/" -o "$bepinex_work/bepinex.zip"; then
+    python3 /install-bepinex-pack.py "$bepinex_work/bepinex.zip" /data/server "$bepinex_pack_version"
+  elif [[ -z "${BEPINEX_PACK_VERSION:-}" && "$installed_pack_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf 'BepInExPack download failed; continuing with installed version %s\n' "$installed_pack_version" >&2
+    bepinex_pack_version="$installed_pack_version"
+  else
+    echo "BepInExPack could not be downloaded and no known installed version is available." >&2
+    exit 1
+  fi
+  rm -rf "$bepinex_work"
+  trap - EXIT
+fi
+export BEPINEX_PACK_VERSION="$bepinex_pack_version"
+printf 'Using BepInExPack Valheim %s\n' "$bepinex_pack_version"
 
 # Releases before 2.1 installed server and client components together under
 # plugins/ServerManager. Quarantine that bundle so its old runtime updater

@@ -155,9 +155,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/check-bepinex-pack.py --latest
+          bepinex_pack_version="$(cat bepinex-pack.version)"
           mkdir -p .bepinex
           curl --fail --location --silent --show-error \
-            https://thunderstore.io/package/download/denikson/BepInExPack_Valheim/5.4.2350/ \
+            "https://thunderstore.io/package/download/denikson/BepInExPack_Valheim/$bepinex_pack_version/" \
             --output .bepinex.zip
           unzip -q .bepinex.zip -d .bepinex
 
