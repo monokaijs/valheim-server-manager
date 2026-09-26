@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.4.0
 
 - Added a dashboard notification tool for one online player or everyone on the server.
 - Added administrator item giving from the inventory page with item search, quality, quantity, and delivered-count feedback.

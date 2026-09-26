@@ -355,7 +355,7 @@ api.MapPost("/mods/upload", async (HttpRequest request, ModService mods, Cancell
 }).RequireAntiforgery();
 api.MapGet("/downloads/plugin", (IConfiguration configuration) =>
 {
-    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManager-2.3.1.zip");
+    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManager-2.4.0.zip");
     return File.Exists(path) ? Results.File(path, "application/zip", Path.GetFileName(path)) : Results.NotFound();
 });
 api.MapPost("/mods/{id:guid}/enable", async (Guid id, ModService mods, CancellationToken ct) => { await mods.SetEnabled(id, true, ct); return Results.NoContent(); }).RequireAntiforgery();
