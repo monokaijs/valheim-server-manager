@@ -184,7 +184,6 @@ jobs:
           cp .release-client/ValheimServerManager.Client.dll .release/BepInEx/plugins/ServerManager/
           cp .release-client/Newtonsoft.Json.dll .release/BepInEx/plugins/ServerManager/
           find .release -type f -name '*.pdb' -delete
-          python3 plugins/make_icon.py thunderstore/icon.png
 
       - name: Install Thunderstore CLI
         shell: bash

@@ -94,6 +94,8 @@ public sealed class ClientPlugin : BaseUnityPlugin
         if (!ReferenceEquals(_registeredRouter, ZRoutedRpc.instance) && ZRoutedRpc.instance != null)
         {
             ZRoutedRpc.instance.Register<string>("VSM_InventoryRequest", OnInventoryRequest);
+            ZRoutedRpc.instance.Register<string>("VSM_ItemCatalogRequest", OnItemCatalogRequest);
+            ZRoutedRpc.instance.Register<string, string, int, int>("VSM_GiveItem", OnGiveItem);
             ZRoutedRpc.instance.Register<bool, string, bool>("VSM_CharacterProfile", OnCharacterProfile);
             ZRoutedRpc.instance.Register("VSM_CharacterCheckpoint", OnCharacterCheckpoint);
             ZRoutedRpc.instance.Register<string, string>("VSM_AdminNotice", OnAdminNotice);
@@ -393,6 +395,8 @@ public sealed class ClientPlugin : BaseUnityPlugin
             __0.m_rpc.Register<bool>("VSM_InspectionPolicy", (rpc, required) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInspectionPolicy(required); });
             __0.m_rpc.Register<bool, int>("VSM_ServerPolicy", (rpc, required, timeout) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnServerPolicy(required, timeout); });
             __0.m_rpc.Register<string>("VSM_InventoryRequest", (rpc, requestId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInventoryRequest(__0.m_uid, requestId); });
+            __0.m_rpc.Register<string>("VSM_ItemCatalogRequest", (rpc, requestId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnItemCatalogRequest(__0.m_uid, requestId); });
+            __0.m_rpc.Register<string, string, int, int>("VSM_GiveItem", (rpc, requestId, prefab, quantity, quality) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnGiveItem(__0.m_uid, requestId, prefab, quantity, quality); });
             __0.m_rpc.Register<bool, string, bool>("VSM_CharacterProfile", (rpc, found, encoded, rejectPreviouslyUsed) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnCharacterProfile(__0.m_uid, found, encoded, rejectPreviouslyUsed); });
             __0.m_rpc.Register("VSM_CharacterCheckpoint", rpc => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnCharacterCheckpoint(__0.m_uid); });
             __0.m_rpc.Register<string, string>("VSM_AdminNotice", (rpc, title, message) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.QueueAdminNotice(title, message); });
@@ -423,6 +427,88 @@ public sealed class ClientPlugin : BaseUnityPlugin
             Logger.LogWarning("Could not prepare inventory snapshot: " + error.Message);
             Reply(requestId, new { ok = false, status = "unavailable", error = "The character snapshot could not be prepared. Try again in a moment." });
         }
+    }
+
+    private void OnItemCatalogRequest(long sender, string requestId)
+    {
+        if (_serverRpc == null || sender != ServerPeerId() || string.IsNullOrEmpty(requestId) || requestId.Length > 100) return;
+        if (!_allowInventory.Value || Player.m_localPlayer == null || ObjectDB.instance == null)
+        { Reply(requestId, new { ok = false, error = "The item catalog is unavailable." }); return; }
+        try
+        {
+            var items = ObjectDB.instance.m_items
+                .Where(prefab => prefab != null && prefab.GetComponent<ItemDrop>() != null)
+                .Select(prefab => new
+                {
+                    prefab = prefab.name,
+                    name = Localize(prefab.GetComponent<ItemDrop>().m_itemData.m_shared.m_name),
+                    maxStack = Math.Max(1, prefab.GetComponent<ItemDrop>().m_itemData.m_shared.m_maxStackSize),
+                    maxQuality = Math.Max(1, prefab.GetComponent<ItemDrop>().m_itemData.m_shared.m_maxQuality)
+                })
+                .OrderBy(item => item.name).ThenBy(item => item.prefab).ToArray();
+            Reply(requestId, new { ok = true, items });
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning("Could not build item catalog: " + exception.Message);
+            Reply(requestId, new { ok = false, error = "The item catalog could not be loaded." });
+        }
+    }
+
+    private void OnGiveItem(long sender, string requestId, string prefab, int quantity, int quality)
+    {
+        if (_serverRpc == null || sender != ServerPeerId() || string.IsNullOrEmpty(requestId) || requestId.Length > 100) return;
+        if (!_allowInventory.Value || Player.m_localPlayer == null || ObjectDB.instance == null)
+        { GiveReply(requestId, new { ok = false, error = "The player inventory is unavailable." }); return; }
+        if (string.IsNullOrEmpty(prefab) || prefab.Length > 128 || quantity < 1 || quantity > 1000 || quality < 1 || quality > 100)
+        { GiveReply(requestId, new { ok = false, error = "Invalid item, quantity, or quality." }); return; }
+        var template = ObjectDB.instance.GetItemPrefab(prefab)?.GetComponent<ItemDrop>();
+        if (template == null || template.gameObject.name != prefab)
+        { GiveReply(requestId, new { ok = false, error = "Item prefab is not available on this client." }); return; }
+        var shared = template.m_itemData.m_shared;
+        if (quality > Math.Max(1, shared.m_maxQuality))
+        { GiveReply(requestId, new { ok = false, error = "Quality exceeds this item's maximum." }); return; }
+        var given = 0;
+        try
+        {
+            var inventory = Player.m_localPlayer.GetInventory();
+            while (given < quantity)
+            {
+                var stack = Math.Min(quantity - given, Math.Max(1, shared.m_maxStackSize));
+                var before = inventory.GetAllItems().Where(item => item.m_dropPrefab != null && item.m_dropPrefab.name == prefab && item.m_quality == quality).Sum(item => item.m_stack);
+                AddGivenItem(inventory, prefab, stack, quality);
+                var after = inventory.GetAllItems().Where(item => item.m_dropPrefab != null && item.m_dropPrefab.name == prefab && item.m_quality == quality).Sum(item => item.m_stack);
+                var added = Math.Max(0, Math.Min(stack, after - before));
+                given += added;
+                if (added < stack) break;
+            }
+            GiveReply(requestId, new { ok = given > 0, prefab, requested = quantity, given, quality,
+                error = given == quantity ? (string)null : "Inventory is full; only part of the quantity could be delivered." });
+            if (given > 0) UploadCharacter();
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning("Could not give item: " + exception.Message);
+            GiveReply(requestId, new { ok = given > 0, prefab, requested = quantity, given, quality, error = "Delivery stopped before the full quantity was added." });
+            if (given > 0) UploadCharacter();
+        }
+    }
+
+    private void GiveReply(string requestId, object payload) => InvokeServer("VSM_GiveResponse", requestId, JsonConvert.SerializeObject(payload));
+
+    private static void AddGivenItem(Inventory inventory, string prefab, int stack, int quality)
+    {
+        // Valheim builds differ in the optional flags after the six stable item arguments.
+        var method = typeof(Inventory).GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .FirstOrDefault(candidate => candidate.Name == "AddItem" &&
+                candidate.GetParameters().Select(parameter => parameter.ParameterType).Take(6).SequenceEqual(
+                    new[] { typeof(string), typeof(int), typeof(int), typeof(int), typeof(long), typeof(string) }) &&
+                candidate.GetParameters().Skip(6).All(parameter => parameter.ParameterType == typeof(bool)));
+        if (method == null) throw new MissingMethodException("Inventory.AddItem");
+        var args = new object[method.GetParameters().Length];
+        args[0] = prefab; args[1] = stack; args[2] = quality; args[3] = 0; args[4] = 0L; args[5] = "";
+        for (var index = 6; index < args.Length; index++) args[index] = false;
+        method.Invoke(inventory, args);
     }
 
     private void CaptureInventory(string requestId, Player player)

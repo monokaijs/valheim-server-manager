@@ -41,6 +41,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private readonly HashSet<long> _pendingCharacterProfiles = new();
     private readonly HashSet<long> _characterProfileSent = new();
     private readonly Dictionary<string, Tuple<long, DateTime>> _inventoryRequests = new();
+    private readonly Dictionary<string, Tuple<long, DateTime>> _giveRequests = new();
     private readonly Dictionary<long, ScheduledKick> _scheduledKicks = new();
     private readonly Dictionary<ZNetPeer, Tuple<bool, string>> _pendingPeerHellos = new();
     private readonly Dictionary<ZDOID, bool> _dead = new();
@@ -141,6 +142,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         if (Time.unscaledTime < _nextMaintenance) return;
         _nextMaintenance = Time.unscaledTime + .25f;
         foreach (var expired in _inventoryRequests.Where(item => DateTime.UtcNow - item.Value.Item2 > TimeSpan.FromSeconds(30)).Select(item => item.Key).ToArray()) _inventoryRequests.Remove(expired);
+        foreach (var expired in _giveRequests.Where(item => DateTime.UtcNow - item.Value.Item2 > TimeSpan.FromSeconds(30)).Select(item => item.Key).ToArray()) _giveRequests.Remove(expired);
         foreach (var scheduled in _scheduledKicks.Where(item => DateTime.UtcNow >= item.Value.Due).ToArray())
         {
             _scheduledKicks.Remove(scheduled.Key);
@@ -265,6 +267,24 @@ public sealed class ServerPlugin : BaseUnityPlugin
                         ZRoutedRpc.instance.InvokeRoutedRPC(peer.m_uid, "ShowMessage", 2, message);
                     }
                     Event("admin.broadcast", new { message }); result = new { ok = true }; break;
+                case "notice.send":
+                    var notice = ((string)data["message"] ?? "").Trim();
+                    if (notice.Length is < 1 or > 300 || notice.Any(character => char.IsControl(character) && character != '\n'))
+                        throw new ArgumentException("Notification must contain 1–300 printable characters.");
+                    var recipientId = (long?)data["peerId"];
+                    var recipients = ZNet.instance.GetPeers().Where(peer => peer != null && peer.IsReady()
+                        && (!recipientId.HasValue || peer.m_uid == recipientId.Value)).ToArray();
+                    if (recipients.Length == 0)
+                        throw new InvalidOperationException(recipientId.HasValue ? "The selected player is no longer online." : "No players are online.");
+                    if (ZRoutedRpc.instance == null) throw new InvalidOperationException("Game messaging is unavailable.");
+                    var routed = 0;
+                    foreach (var recipient in recipients)
+                    {
+                        try { ZRoutedRpc.instance.InvokeRoutedRPC(recipient.m_uid, "ShowMessage", 2, notice); routed++; }
+                        catch (Exception error) { Logger.LogWarning($"Could not route notification to {recipient.m_uid}: {error.Message}"); }
+                    }
+                    if (routed == 0) throw new InvalidOperationException("Notification could not be routed to any player.");
+                    result = new { ok = true, recipients = routed, online = recipients.Length }; break;
                 case "player.kick": result = Kick(data); break;
                 case "player.ban": result = Ban(data); break;
                 case "access.permitted.add": result = Access("m_permittedList", data, true, "whitelist.added"); break;
@@ -279,6 +299,28 @@ public sealed class ServerPlugin : BaseUnityPlugin
                     if (!inventoryAllowed) throw new InvalidOperationException("The player has not enabled inventory inspection.");
                     _inventoryRequests[requestId] = Tuple.Create(peerId, DateTime.UtcNow);
                     InvokePeer(ZNet.instance.GetPeers().FirstOrDefault(item => item.m_uid == peerId), "VSM_InventoryRequest", requestId);
+                    return;
+                case "items.catalog":
+                case "items.give":
+                    var targetPeerId = (long?)data["peerId"] ?? 0;
+                    var targetPeer = ZNet.instance.GetPeers().FirstOrDefault(item => item.m_uid == targetPeerId && item.IsReady());
+                    if (targetPeer == null || !_companions.TryGetValue(targetPeerId, out var allowed) || !allowed)
+                        throw new InvalidOperationException("The player must be online with the Server Manager client and inventory sharing enabled.");
+                    if (name == "items.catalog")
+                    {
+                        _inventoryRequests[requestId] = Tuple.Create(targetPeerId, DateTime.UtcNow);
+                        InvokePeer(targetPeer, "VSM_ItemCatalogRequest", requestId);
+                    }
+                    else
+                    {
+                        var prefab = ((string)data["prefab"] ?? "").Trim();
+                        var quantity = (int?)data["quantity"] ?? 0;
+                        var quality = (int?)data["quality"] ?? 0;
+                        if (prefab.Length is < 1 or > 128 || quantity is < 1 or > 1000 || quality is < 1 or > 100)
+                            throw new ArgumentException("Invalid item, quantity, or quality.");
+                        _giveRequests[requestId] = Tuple.Create(targetPeerId, DateTime.UtcNow);
+                        InvokePeer(targetPeer, "VSM_GiveItem", requestId, prefab, quantity, quality);
+                    }
                     return;
                 default: throw new InvalidOperationException("Unsupported command: " + name);
             }
@@ -698,6 +740,15 @@ public sealed class ServerPlugin : BaseUnityPlugin
         try { Enqueue(new { type = "inventoryResponse", requestId, payload = JObject.Parse(json) }); }
         catch (JsonException) { Reply(requestId, new { ok = false, error = "Invalid inventory response." }); }
     }
+
+    internal void GiveResponse(long sender, string requestId, string json)
+    {
+        if (!_giveRequests.TryGetValue(requestId, out var pending) || pending.Item1 != sender) return;
+        _giveRequests.Remove(requestId);
+        if (json == null || json.Length > 4096) { Reply(requestId, new { ok = false, error = "Invalid give response." }); return; }
+        try { Reply(requestId, JObject.Parse(json)); }
+        catch (JsonException) { Reply(requestId, new { ok = false, error = "Invalid give response." }); }
+    }
     internal void CompanionEvent(long sender, string json)
     {
         try { var data = JObject.Parse(json); Event((string)data["eventType"], data["data"], "companion", "reported"); } catch { }
@@ -761,6 +812,11 @@ public sealed class ServerPlugin : BaseUnityPlugin
             var peerId = (PeerForRpc(znet, rpc) ?? peer).m_uid;
             if (peerId != 0) InventoryResponse(peerId, request, json);
         });
+        peer.m_rpc.Register<string, string>("VSM_GiveResponse", (rpc, request, json) =>
+        {
+            var peerId = (PeerForRpc(znet, rpc) ?? peer).m_uid;
+            if (peerId != 0) GiveResponse(peerId, request, json);
+        });
         peer.m_rpc.Register<string>("VSM_CompanionEvent", (rpc, json) =>
         {
             var peerId = (PeerForRpc(znet, rpc) ?? peer).m_uid;
@@ -813,6 +869,11 @@ public sealed class ServerPlugin : BaseUnityPlugin
             _inventoryRequests.Remove(request);
             Reply(request, new { ok = false, error = "The player disconnected before the snapshot was ready." });
         }
+        foreach (var request in _giveRequests.Where(item => item.Value.Item1 == peer.m_uid).Select(item => item.Key).ToArray())
+        {
+            _giveRequests.Remove(request);
+            Reply(request, new { ok = false, error = "The player disconnected before the item was delivered." });
+        }
         if (joined) Event("player.left", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), peerId = peer.m_uid });
     }
     internal void RelayClientManifest(ZNetPeer peer)
@@ -834,6 +895,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         if (_rpcsRegistered || ZRoutedRpc.instance == null || ZNet.instance == null || !ZNet.instance.IsServer()) return;
         ZRoutedRpc.instance.Register<bool, string>("VSM_ClientHello", (sender, allowed, version) => ClientHello(sender, allowed, version));
         ZRoutedRpc.instance.Register<string, string>("VSM_InventoryResponse", (sender, request, json) => InventoryResponse(sender, request, json));
+        ZRoutedRpc.instance.Register<string, string>("VSM_GiveResponse", (sender, request, json) => GiveResponse(sender, request, json));
         ZRoutedRpc.instance.Register<string>("VSM_CompanionEvent", (sender, json) => CompanionEvent(sender, json));
         ZRoutedRpc.instance.Register<string>("VSM_CharacterUpload", (sender, encoded) => CharacterUpload(sender, encoded));
         _rpcsRegistered = true;

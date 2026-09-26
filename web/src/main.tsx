@@ -2,7 +2,7 @@ import React, { FormEvent, useCallback, useEffect, useRef, useState } from "reac
 import { createRoot } from "react-dom/client"
 import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr"
 import {
-  Activity, Backpack, Ban, Boxes, ChevronRight, CircleGauge, Clock3, Command, Copy, Download,
+  Activity, Backpack, Ban, Bell, Boxes, ChevronRight, CircleGauge, Clock3, Command, Copy, Download,
   FileUp, HeartPulse, HelpCircle, LogOut, MoreHorizontal, PackageCheck, PlugZap, Plus,
   RadioTower, RefreshCw, ScrollText, Search, Server, Settings, ShieldCheck,
   Check, KeyRound, Shield, Sparkles, SquareTerminal, Trash2, UserPlus, UserRoundSearch, Users, Webhook, Wifi, WifiOff, X,
@@ -249,6 +249,10 @@ function PlayersPage() {
   const [moderation, setModeration] = useState<{ player: Player; action: "kick" | "ban" } | null>(null)
   const [reason, setReason] = useState("")
   const [moderating, setModerating] = useState(false)
+  const [notificationOpen, setNotificationOpen] = useState(false)
+  const [notificationTarget, setNotificationTarget] = useState("all")
+  const [notificationMessage, setNotificationMessage] = useState("")
+  const [notifying, setNotifying] = useState(false)
   useEffect(() => {
     const timer = window.setInterval(() => { void loadPlayers(); void loadKnown(); void loadRequests() }, 5000)
     return () => window.clearInterval(timer)
@@ -291,8 +295,25 @@ function PlayersPage() {
       setModeration(null); setReason(""); window.setTimeout(loadPlayers, 3500)
     } catch (cause) { toast.error((cause as Error).message) } finally { setModerating(false) }
   }
+  const openNotification = (peerKey = "all") => { setNotificationTarget(peerKey); setNotificationMessage(""); setNotificationOpen(true) }
+  const sendNotification = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!notificationMessage.trim()) return
+    setNotifying(true)
+    try {
+      const result = await post<{ recipients: number; online: number }>("/api/v1/notifications", {
+        peerKey: notificationTarget === "all" ? null : notificationTarget,
+        message: notificationMessage.trim(),
+      })
+      toast.success(result.recipients === result.online
+        ? `Notification sent to ${result.recipients} player${result.recipients === 1 ? "" : "s"}`
+        : `Notification routed to ${result.recipients} of ${result.online} players`)
+      setNotificationOpen(false); setNotificationMessage("")
+    } catch (cause) { toast.error((cause as Error).message) }
+    finally { setNotifying(false) }
+  }
   return <div className="space-y-4">
-    <PageHeader page="players" actions={<Button variant="outline" size="sm" onClick={refresh}><RefreshCw /> Refresh</Button>} />
+    <PageHeader page="players" actions={<div className="flex gap-2"><Button size="sm" disabled={!players?.length} onClick={() => openNotification()}><Bell /> Notify players</Button><Button variant="outline" size="sm" onClick={refresh}><RefreshCw /> Refresh</Button></div>} />
     <Tabs defaultValue="roster" className="gap-3">
       <TabsList className="grid h-auto w-full grid-cols-4 gap-1 sm:inline-flex sm:w-auto sm:self-start">
         <TabsTrigger value="roster">Roster <span className="hidden text-xs text-muted-foreground sm:inline">{roster.length}</span></TabsTrigger>
@@ -315,7 +336,7 @@ function PlayersPage() {
             return <div key={item.id} className="flex flex-wrap items-center gap-2 border-b px-3 py-3 last:border-0 sm:px-4">
               <div className="min-w-0 flex-1 basis-44"><PlayerIdentity id={item.id} fallback={fallback} profiles={profiles} detail={detail} /></div>
               <div className="flex flex-wrap items-center gap-1.5"><Badge variant={player ? "secondary" : "outline"}>{player ? "Online" : "Offline"}</Badge>{item.request?.status === "pending" && <Badge variant="outline">Request pending</Badge>}{item.banned && <Badge variant="destructive">Banned</Badge>}{item.admin && <Badge variant="outline">Admin</Badge>}{item.permitted && <Badge variant="outline">Allowed</Badge>}</div>
-              {player && <div className="ml-auto flex items-center gap-1"><Button size="sm" variant="outline" disabled={!player.companion || !player.inventoryAllowed} onClick={() => loadCharacter(player, setInspector)}><UserRoundSearch /> <span className="hidden sm:inline">Inspect</span></Button><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${fallback || item.id}`}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => setModeration({ player, action: "kick" })}><LogOut /> Kick</DropdownMenuItem><DropdownMenuItem variant="destructive" onClick={() => setModeration({ player, action: "ban" })}><Ban /> Ban</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>}
+              {player && <div className="ml-auto flex items-center gap-1"><Button size="sm" variant="outline" disabled={!player.companion || !player.inventoryAllowed} onClick={() => loadCharacter(player, setInspector)}><UserRoundSearch /> <span className="hidden sm:inline">Inspect</span></Button><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${fallback || item.id}`}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => openNotification(player.peerKey)}><Bell /> Notify</DropdownMenuItem><DropdownMenuItem onClick={() => setModeration({ player, action: "kick" })}><LogOut /> Kick</DropdownMenuItem><DropdownMenuItem variant="destructive" onClick={() => setModeration({ player, action: "ban" })}><Ban /> Ban</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>}
             </div>
           })}
           {visible.length === 0 && <EmptyState icon={Users} title={roster.length ? "No matching players" : "No players yet"} detail={roster.length ? "Try another name or status." : "Players appear after they join, request access, or receive a server-owned character."} />}
@@ -326,6 +347,7 @@ function PlayersPage() {
       <TabsContent value="access"><AccessPage data={access} error={accessError} load={loadAccess} profiles={profiles} onChanged={refresh} /></TabsContent>
     </Tabs>
     <CharacterDialog state={inspector} onClose={() => setInspector(null)} />
+    <Dialog open={notificationOpen} onOpenChange={open => { setNotificationOpen(open); if (!open) setNotificationMessage("") }}><DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle>In-game notification</DialogTitle><DialogDescription>Show a message in Valheim's notification HUD. Only online players can receive it.</DialogDescription></DialogHeader><form onSubmit={sendNotification} className="space-y-4"><div className="space-y-2"><Label htmlFor="notification-target">Recipient</Label><Select value={notificationTarget} onValueChange={setNotificationTarget}><SelectTrigger id="notification-target" className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All online players ({players?.length || 0})</SelectItem>{players?.map(player => <SelectItem key={player.peerKey} value={player.peerKey}>{player.name}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label htmlFor="notification-message">Message</Label><Textarea id="notification-message" value={notificationMessage} onChange={event => setNotificationMessage(event.target.value)} maxLength={300} rows={4} required placeholder="Write the notification players will see…" /><p className="text-right text-xs text-muted-foreground">{notificationMessage.length}/300</p></div><div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setNotificationOpen(false)}>Cancel</Button><Button type="submit" disabled={notifying || !notificationMessage.trim() || (notificationTarget === "all" ? !players?.length : !players?.some(player => player.peerKey === notificationTarget))}>{notifying ? "Sending…" : "Send notification"}</Button></div></form></DialogContent></Dialog>
     <Dialog open={moderation !== null} onOpenChange={open => { if (!open) { setModeration(null); setReason("") } }}><DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle className="capitalize">{moderation?.action} {moderation?.player.name}</DialogTitle><DialogDescription>This action is recorded in the audit log.</DialogDescription></DialogHeader><div className="space-y-2"><Label htmlFor="moderation-reason">Reason</Label><Textarea id="moderation-reason" value={reason} onChange={event => setReason(event.target.value)} maxLength={300} placeholder="No reason provided." /></div><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setModeration(null)}>Cancel</Button><Button variant={moderation?.action === "ban" ? "destructive" : "default"} disabled={moderating} onClick={moderate}>{moderating ? "Sending…" : moderation?.action === "ban" ? "Ban player" : "Kick player"}</Button></div></DialogContent></Dialog>
   </div>
 }

@@ -10,4 +10,4 @@ The BepInEx plugin ID is `dev.creaton.valheim-server-manager.client`.
 
 ## Privacy
 
-Inventory inspection is enabled by default for new installs and required to join Server Manager realms. An existing disabled setting remains a refusal, and the server rejects that client after the handshake grace period. Detailed telemetry remains opt-in.
+Inventory inspection is enabled by default for new installs and required to join Server Manager realms. An existing disabled setting remains a refusal, and the server rejects that client after the handshake grace period. Authenticated server administrators can also give items through the inventory page; the client validates the item and delivers it into the local character inventory. Detailed telemetry remains opt-in.

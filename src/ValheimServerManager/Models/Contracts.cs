@@ -47,5 +47,7 @@ public sealed record EventEnvelope(
 public sealed record LogEntry(DateTimeOffset Timestamp, string Stream, string Message);
 public sealed record AgentMessage(string Type, JsonElement Payload, string? RequestId = null);
 public sealed record CommandRequest(string Command);
+public sealed record GiveItemRequest(string Prefab, int Quantity, int Quality);
+public sealed record NotificationRequest(string? PeerKey, string Message);
 public sealed record AccessMutation(string PlatformId);
 public sealed record WebhookRequest(string Name, string Url, string Kind, string Secret, string[] EventTypes, string? Template, bool Enabled, bool AllowPrivateNetwork);

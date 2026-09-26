@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added a dashboard notification tool for one online player or everyone on the server.
+- Added administrator item giving from the inventory page with item search, quality, quantity, and delivered-count feedback.
+- Replaced the generated package icon with dedicated Server Manager artwork.
+
 ## 2.3.0
 
 - Removed the Server Manager notice panel from active gameplay. Welcome messages, broadcasts, and moderation reasons use Valheim's built-in HUD; persistent notices remain available at the menu.

@@ -91,11 +91,15 @@ Enabled = true
 
 The live inspection desk continuously requests current stats, biome, skills, equipment, inventory placement, item metadata, durability, and game-rendered item icons while an administrator is watching. It shows sample freshness, slot changes, searchable skills, and item details; pausing, hiding the tab, or closing the view stops sampling. Snapshots are returned only to the authenticated requesting administrator and are not saved or sent to webhooks. These are client-reported observations, not cheat-proof inventory transactions.
 
+In the inventory tab, an authenticated administrator can search the connected client's item catalog (including modded items) and give an item with a chosen quality and quantity. The client checks the prefab and quality, places as many items as fit in the player's inventory, and reports the delivered count. The action is audited; the catalog is fetched only for the current player.
+
 ## Server-owned characters and migration
 
 VSM implements its own server-character protocol in the protected server agent and client runtime; it does not depend on ServerCharacters or ServerSync. The server sends its authoritative native `.fch` before player spawn. The client runtime installs that profile into the active Valheim session and returns native checkpoints every 30 seconds, on Valheim profile saves, on server save requests, and during normal logout handling. Clients without a compatible Server Manager runtime are rejected when server characters are enabled.
 
 **Players** combines the roster, join requests, characters, and access lists. The roster retains names and last-seen dates after players disconnect and includes owners of server-owned characters. Set `VSM_STEAM_API_KEY` in `.env` to show Steam display names and avatars; the key stays on the server. Without a key, the dashboard uses known character names and links to Steam profiles. Steam's [GetPlayerSummaries API](https://partner.steamgames.com/doc/webapi/ISteamUser#GetPlayerSummaries) provides profile details.
+
+Administrators can use **Notify players** on the Players page to show a message in Valheim's HUD to everyone online, or use **Notify** from an online player's actions menu to address only that player. The manager records the target, message, and number of routed recipients in the audit log.
 
 **Players → Characters** migrates existing native `.fch` saves after Valheim is stopped. Upload each save with its owning Steam64 ID. The manager writes the profile atomically to `characters_local` as `Steam_<Steam64>_<character>.fch`; replacements create a copy under `characters_local/vsm-import-backups/` before activation. Runtime checkpoints also retain configurable rolling backups in `characters_local/vsm-character-backups/`.
 

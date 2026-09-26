@@ -20,6 +20,5 @@ artifacts/
 .valheim/
 build/
 release/
-thunderstore/icon.png
 *.user
 *.suo

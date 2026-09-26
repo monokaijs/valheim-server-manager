@@ -192,6 +192,27 @@ var api = app.MapGroup("/api/v1").RequireAuthorization();
 api.MapModFiles();
 api.MapGet("/status", (ServerState state) => Results.Ok(state.Snapshot()));
 api.MapGet("/players", (ServerState state) => Results.Ok(state.Players));
+api.MapPost("/notifications", async (NotificationRequest request, AgentGateway agent, AuditService audit) =>
+{
+    var message = request.Message?.Trim() ?? "";
+    if (message.Length is < 1 or > 300 || message.Any(character => char.IsControl(character) && character != '\n'))
+        return Results.BadRequest(new ProblemDetails { Title = "Notification must contain 1–300 printable characters." });
+    long? peerId = null;
+    if (!string.IsNullOrWhiteSpace(request.PeerKey))
+    {
+        if (!long.TryParse(request.PeerKey, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var parsed) || parsed == 0)
+            return Results.BadRequest(new ProblemDetails { Title = "Invalid player ID." });
+        peerId = parsed;
+    }
+    var target = peerId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "all";
+    var result = await agent.Command("notice.send", new { peerId, message }, TimeSpan.FromSeconds(10));
+    var ok = result.TryGetProperty("ok", out var succeeded) && succeeded.GetBoolean();
+    var recipients = result.TryGetProperty("recipients", out var count) && count.TryGetInt32(out var actual) ? actual : 0;
+    await audit.Write("notification.send", target, ok ? "success" : "failure", $"recipients:{recipients};message:{message}");
+    if (!ok)
+        return Results.Conflict(new ProblemDetails { Title = "Notification was not sent", Detail = result.TryGetProperty("error", out var error) ? error.GetString() : null });
+    return Results.Json(result);
+}).RequireAntiforgery();
 api.MapGet("/player-directory", async (PlayerDirectoryService directory, CancellationToken ct) => Results.Ok(await directory.List(ct)));
 api.MapGet("/steam-profiles", async (string? ids, SteamProfileService profiles, CancellationToken ct) => Results.Ok(await profiles.Get(ids, ct)));
 api.MapPost("/players/{peerId:long}/kick", async (long peerId, ModerationRequest request, AgentGateway agent, ServerMessageService messages, ServerState state, AuditService audit, CancellationToken ct) =>
@@ -224,6 +245,26 @@ api.MapPost("/players/{peerId:long}/inventory", async (long peerId, AgentGateway
         var reason = result.TryGetProperty("error", out var error) ? error.GetString() : "Inventory is unavailable.";
         return Results.Conflict(new ProblemDetails { Title = "Inventory unavailable", Detail = reason });
     }
+    return Results.Json(result);
+}).RequireAntiforgery();
+api.MapGet("/players/{peerId:long}/items", async (long peerId, AgentGateway agent) =>
+{
+    var result = await agent.Command("items.catalog", new { peerId }, TimeSpan.FromSeconds(15));
+    if (result.TryGetProperty("ok", out var succeeded) && !succeeded.GetBoolean())
+        return Results.Conflict(new ProblemDetails { Title = "Item catalog unavailable", Detail = result.TryGetProperty("error", out var error) ? error.GetString() : null });
+    return Results.Json(result);
+});
+api.MapPost("/players/{peerId:long}/give", async (long peerId, GiveItemRequest request, AgentGateway agent, AuditService audit) =>
+{
+    var prefab = request.Prefab?.Trim() ?? "";
+    if (prefab.Length is < 1 or > 128 || request.Quantity is < 1 or > 1000 || request.Quality is < 1 or > 100)
+        return Results.BadRequest(new ProblemDetails { Title = "Invalid item, quantity, or quality." });
+    var result = await agent.Command("items.give", new { peerId, prefab, request.Quantity, request.Quality }, TimeSpan.FromSeconds(15));
+    var ok = result.TryGetProperty("ok", out var succeeded) && succeeded.GetBoolean();
+    var given = result.TryGetProperty("given", out var count) && count.TryGetInt32(out var actual) ? actual : 0;
+    await audit.Write("player.item.give", peerId.ToString(), ok ? "success" : "failure", $"prefab:{prefab};quality:{request.Quality};requested:{request.Quantity};given:{given}");
+    if (!ok)
+        return Results.Conflict(new ProblemDetails { Title = "Item could not be delivered", Detail = result.TryGetProperty("error", out var error) ? error.GetString() : null });
     return Results.Json(result);
 }).RequireAntiforgery();
 
