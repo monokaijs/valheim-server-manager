@@ -551,7 +551,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
             var zdo = ZDOMan.instance.GetZDO(peer.m_characterID); if (zdo == null) continue;
             var dead = zdo.GetBool("dead".GetStableHashCode());
             _dead.TryGetValue(peer.m_characterID, out var wasDead);
-            if (dead && !wasDead) Event("player.died", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), position = zdo.GetPosition() });
+            if (dead && !wasDead) Event("player.died", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), position = EventPosition(zdo.GetPosition()) });
             _dead[peer.m_characterID] = dead;
         }
     }
@@ -927,7 +927,12 @@ public sealed class ServerPlugin : BaseUnityPlugin
         }
         catch (Exception exception) { Logger.LogWarning($"Could not relay the client mod manifest: {exception.GetBaseException().Message}"); }
     }
-    internal void Event(string eventType, object data, string source = "server", string confidence = "authoritative") => Enqueue(new { type = "event", payload = new { eventType, source, confidence, data } });
+    internal void Event(string eventType, object data, string source = "server", string confidence = "authoritative")
+    {
+        try { Enqueue(new { type = "event", payload = new { eventType, source, confidence, data } }); }
+        catch (Exception exception) { Logger.LogWarning($"Could not send {eventType} event: {exception.GetBaseException().Message}"); }
+    }
+    private static object EventPosition(Vector3 position) => new { x = position.x, y = position.y, z = position.z };
     private void Reply(string requestId, object payload) => Enqueue(new { type = "commandResult", requestId, payload });
     private void Enqueue(object message) => _outgoing.Enqueue(JsonConvert.SerializeObject(message, Formatting.None));
     private void TryRegisterClientRpcs()
@@ -1115,7 +1120,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     [HarmonyPatch(typeof(ZoneSystem), "SetGlobalKey", typeof(string))]
     private static class GlobalKeyPatch { private static void Postfix(string name) { Instance.Event(name != null && name.StartsWith("defeated_") ? "boss.progression.unlocked" : "world.global_key.added", new { key = name }); } }
     [HarmonyPatch(typeof(RandEventSystem), "SetRandomEvent")]
-    private static class RaidPatch { private static void Postfix(RandomEvent ev, Vector3 pos) => Instance.Event(ev == null ? "raid.ended" : "raid.started", new { name = ev?.m_name, position = pos }); }
+    private static class RaidPatch { private static void Postfix(RandomEvent ev, Vector3 pos) => Instance.Event(ev == null ? "raid.ended" : "raid.started", new { name = ev?.m_name, position = EventPosition(pos) }); }
     [HarmonyPatch(typeof(EnvMan), "UpdateTriggers")]
     private static class DayPatch
     {
@@ -1142,7 +1147,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     {
         private static void Prefix(Character __instance)
         {
-            if (__instance != null && __instance.IsBoss()) Instance.Event("boss.killed", new { boss = __instance.GetHoverName(), position = __instance.transform.position });
+            if (__instance != null && __instance.IsBoss()) Instance.Event("boss.killed", new { boss = __instance.GetHoverName(), position = EventPosition(__instance.transform.position) });
         }
     }
     [HarmonyPatch(typeof(Talker), "RPC_Say")]
