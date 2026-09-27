@@ -30,6 +30,7 @@ RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-in
 WORKDIR /app
 COPY --from=app-build /out ./
 COPY bepinex-pack.version ./
+COPY thunderstore/icon.png ./icon.png
 COPY plugins/ ./plugins/
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/install-bepinex-pack.py /install-bepinex-pack.py

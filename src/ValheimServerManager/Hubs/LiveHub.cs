@@ -29,11 +29,14 @@ public sealed class LiveHub(InventoryInspectionService inspection, AccessListSer
             {
                 // Do not let a long-lived socket bypass a revoked administrator membership.
                 if (!await access.IsSteamAdmin(steamId)) throw new HubException("Administrator access was revoked.");
-                var frame = await inspection.Read(peer, token);
-                token.ThrowIfCancellationRequested();
+                InspectionFrame? frame = null;
+                try { frame = await inspection.Read(peer, token); }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+                if (frame is null || token.IsCancellationRequested) break;
                 yield return frame;
                 if (frame.Status == "offline") yield break;
-                await Task.Delay(InventoryInspectionService.SampleInterval, token);
+                try { await Task.Delay(InventoryInspectionService.SampleInterval, token); }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
             }
         }
         finally
