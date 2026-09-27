@@ -20,8 +20,8 @@ public sealed class InventoryArchiveService(IServiceScopeFactory scopes, AgentGa
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();
         var snapshot = await db.SavedInventories.AsNoTracking().SingleOrDefaultAsync(x => x.PlatformId == platformId, ct);
-        var edits = await db.PendingInventoryEdits.AsNoTracking().Where(x => x.PlatformId == platformId)
-            .OrderByDescending(x => x.CreatedAt).Take(50).ToArrayAsync(ct);
+        var edits = (await db.PendingInventoryEdits.AsNoTracking().Where(x => x.PlatformId == platformId).ToArrayAsync(ct))
+            .OrderByDescending(x => x.CreatedAt).Take(50).ToArray();
         JsonElement? content = null;
         if (snapshot is not null) { using var document = JsonDocument.Parse(snapshot.SnapshotJson); content = document.RootElement.Clone(); }
         return new { capturedAt = snapshot?.CapturedAt, snapshot = content, edits };
@@ -95,8 +95,8 @@ public sealed class InventoryArchiveService(IServiceScopeFactory scopes, AgentGa
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();
-        var pending = await db.PendingInventoryEdits.Where(x => x.Status == "pending")
-            .OrderBy(x => x.CreatedAt).Take(50).ToArrayAsync(ct);
+        var pending = (await db.PendingInventoryEdits.Where(x => x.Status == "pending").ToArrayAsync(ct))
+            .OrderBy(x => x.CreatedAt).Take(50);
         foreach (var entry in pending)
         {
             var player = state.Players.FirstOrDefault(p => ServerCharacterService.SamePlatform(p.PlatformId, entry.PlatformId) && p.Companion && p.InventoryAllowed);
