@@ -2,6 +2,8 @@ using System.Text.Json;
 
 namespace ValheimServerManager.Models;
 
+public sealed record EditItemRequest(string Action, string Prefab, int X, int Y, int ExpectedStack, int ExpectedQuality, int Stack, int Quality, float Durability);
+
 public sealed record PlayerInfo(
     long PeerId,
     string Name,

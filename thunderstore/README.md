@@ -4,7 +4,7 @@ This package contains the Valheim Server Manager client plugin. The server agent
 
 The client provides server-owned characters, privacy-controlled inventory inspection, and a read-only mod allowlist check. It checks package metadata already present in the active BepInEx profile. Missing required packages, unlisted packages, or installed optional packages at unlisted versions disconnect the client with a persistent notice.
 
-Discord activity is optional. With Discord desktop running, set `ShowServerActivity = true` under `[Discord]` in `BepInEx/config/dev.creaton.valheim-server-manager.client.cfg` and restart Valheim. The server owner sets a Discord application ID and controls the image and text layout under Settings → Discord in the dashboard. Available variables include the current biome (`{region}`), server and world names, online player count, capacity, and free slots. The activity clears when you disconnect.
+When the server owner configures a Discord Application ID, the client automatically shows that server's activity while connected; there is no client opt-in setting. Discord desktop must be running with activity sharing enabled. The server owner controls the image and text layout under Settings → Discord in the dashboard. Available variables include the current biome (`{region}`), server and world names, online player count, capacity, and free slots. The activity clears when you disconnect or the server disables it.
 
 The client does not download, install, update, or remove mods. No installer, preloader, or mod manager is included. Manage the profile through your external mod manager and restart Valheim after changing packages.
 

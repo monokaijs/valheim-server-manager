@@ -58,6 +58,7 @@ builder.Services.AddSingleton<SafeConsoleService>();
 builder.Services.AddSingleton<ModService>();
 builder.Services.AddSingleton<ClientModManifestService>();
 builder.Services.AddSingleton<ServerCharacterService>();
+builder.Services.AddSingleton<InventoryArchiveService>();
 builder.Services.AddSingleton<ServerCharacterSettingsService>();
 builder.Services.AddSingleton<ServerSettingsService>();
 builder.Services.AddSingleton<ServerMessageService>();
@@ -73,6 +74,7 @@ builder.Services.AddSingleton<SteamProfileService>();
 builder.Services.AddSingleton<PlayerDirectoryService>();
 builder.Services.AddScoped<SteamAdminCookieEvents>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProcessSupervisor>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<InventoryArchiveService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MonitorService>());
 builder.Services.AddHostedService<WebhookDispatcher>();
 builder.Services.AddHostedService<ModUpdateChecker>();
@@ -115,7 +117,24 @@ using (var scope = app.Services.CreateScope())
             "Name" TEXT NOT NULL,
             "LastSeenAt" TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS "SavedInventories" (
+            "PlatformId" TEXT NOT NULL CONSTRAINT "PK_SavedInventories" PRIMARY KEY,
+            "CapturedAt" TEXT NOT NULL,
+            "SnapshotJson" TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS "PendingInventoryEdits" (
+            "Id" TEXT NOT NULL CONSTRAINT "PK_PendingInventoryEdits" PRIMARY KEY,
+            "PlatformId" TEXT NOT NULL,
+            "Action" TEXT NOT NULL,
+            "PayloadJson" TEXT NOT NULL,
+            "Status" TEXT NOT NULL,
+            "CreatedAt" TEXT NOT NULL,
+            "CompletedAt" TEXT NULL,
+            "Error" TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS "IX_PendingInventoryEdits_PlatformId_Status_CreatedAt" ON "PendingInventoryEdits" ("PlatformId", "Status", "CreatedAt");
         """);
+    await db.Database.ExecuteSqlRawAsync("UPDATE PendingInventoryEdits SET Status = 'unknown', Error = 'Delivery status unknown after manager restart' WHERE Status = 'sending'");
     scope.ServiceProvider.GetRequiredService<ServerState>().RestartRequired = await db.ManagerSettings.AnyAsync(x =>
         (x.Key == "mods.pending" || x.Key == "configs.pending") && x.Value == "true");
 }
@@ -196,6 +215,14 @@ api.MapModFiles();
 api.MapGet("/status", (ServerState state) => Results.Ok(state.Snapshot()));
 api.MapGet("/monitor", (MonitorService monitor) => Results.Ok(monitor.Snapshot()));
 api.MapGet("/players", (ServerState state) => Results.Ok(state.Players));
+api.MapGet("/players/{platformId}/saved-inventory", async (string platformId, InventoryArchiveService archive, CancellationToken ct) =>
+    Results.Ok(await archive.Read(platformId, ct)));
+api.MapPost("/players/{platformId}/saved-inventory/edits", async (string platformId, InventoryMutation edit, InventoryArchiveService archive, CancellationToken ct) =>
+{
+    try { return Results.Ok(await archive.Queue(platformId, edit, ct)); }
+    catch (Exception error) when (error is ArgumentException or FileNotFoundException or InvalidOperationException)
+    { return Results.BadRequest(new ProblemDetails { Title = "Inventory edit could not be queued", Detail = error.Message }); }
+}).RequireAntiforgery();
 api.MapPost("/notifications", async (NotificationRequest request, AgentGateway agent, AuditService audit) =>
 {
     var message = request.Message?.Trim() ?? "";
@@ -271,6 +298,20 @@ api.MapPost("/players/{peerId:long}/give", async (long peerId, GiveItemRequest r
         return Results.Conflict(new ProblemDetails { Title = "Item could not be delivered", Detail = result.TryGetProperty("error", out var error) ? error.GetString() : null });
     return Results.Json(result);
 }).RequireAntiforgery();
+api.MapPost("/players/{peerId:long}/items/edit", async (long peerId, EditItemRequest request, AgentGateway agent, AuditService audit) =>
+{
+    if (request.Action is not ("replace" or "remove") || request.Prefab is null || request.Prefab.Length is < 1 or > 128 ||
+        request.X is < 0 or > 15 || request.Y is < 0 or > 15 || request.ExpectedStack is < 1 or > 1000 ||
+        request.ExpectedQuality is < 1 or > 100 || request.Stack is < 1 or > 1000 || request.Quality is < 1 or > 100 ||
+        !float.IsFinite(request.Durability) || request.Durability < 0)
+        return Results.BadRequest(new ProblemDetails { Title = "Invalid inventory edit." });
+    var result = await agent.Command("items.edit", new { peerId, request.Action, request.Prefab, request.X, request.Y,
+        request.ExpectedStack, request.ExpectedQuality, request.Stack, request.Quality, request.Durability }, TimeSpan.FromSeconds(15));
+    var ok = result.TryGetProperty("ok", out var succeeded) && succeeded.GetBoolean();
+    await audit.Write("player.item." + request.Action, peerId.ToString(), ok ? "success" : "failure", $"prefab:{request.Prefab};slot:{request.X},{request.Y};stack:{request.Stack};quality:{request.Quality}");
+    if (!ok) return Results.Conflict(new ProblemDetails { Title = "Item could not be edited", Detail = result.TryGetProperty("error", out var error) ? error.GetString() : null });
+    return Results.Json(result);
+}).RequireAntiforgery();
 
 api.MapGet("/characters", (ServerCharacterService characters, ServerState state) => Results.Ok(new
 {
@@ -279,6 +320,25 @@ api.MapGet("/characters", (ServerCharacterService characters, ServerState state)
     serverStatus = state.Status,
     characters = characters.List()
 }));
+api.MapGet("/characters/{fileName}/inventory", async (string fileName, ServerCharacterService characters, CancellationToken ct) =>
+{
+    try { return Results.Ok(await characters.Inventory(fileName, null, ct)); }
+    catch (Exception error) when (error is FileNotFoundException or InvalidDataException or InvalidOperationException)
+    { return Results.Conflict(new ProblemDetails { Title = "Character inventory unavailable", Detail = error.Message }); }
+});
+api.MapPost("/characters/{fileName}/inventory", async (string fileName, CharacterInventoryEdit edit, ServerCharacterService characters, AuditService audit, CancellationToken ct) =>
+{
+    if (edit.Action is not ("give" or "replace" or "remove"))
+        return Results.BadRequest(new ProblemDetails { Title = "Invalid inventory action." });
+    try
+    {
+        var result = await characters.Inventory(fileName, edit, ct);
+        await audit.Write("server-character.inventory." + edit.Action, fileName, detail: $"prefab:{edit.Prefab};quantity:{edit.Quantity};quality:{edit.Quality};slot:{edit.X},{edit.Y};given:{result.Given}");
+        return Results.Ok(result);
+    }
+    catch (Exception error) when (error is FileNotFoundException or InvalidDataException or InvalidOperationException)
+    { return Results.Conflict(new ProblemDetails { Title = "Character inventory edit failed", Detail = error.Message }); }
+}).RequireAntiforgery();
 api.MapPost("/characters/import", async (HttpRequest request, ServerCharacterService characters, AuditService audit, CancellationToken ct) =>
 {
     if (!request.HasFormContentType) return Results.BadRequest(new ProblemDetails { Title = "multipart/form-data is required." });
@@ -359,7 +419,7 @@ api.MapPost("/mods/upload", async (HttpRequest request, ModService mods, Cancell
 }).RequireAntiforgery();
 api.MapGet("/downloads/plugin", (IConfiguration configuration) =>
 {
-    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManager-2.5.1.zip");
+    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManager-2.5.2.zip");
     return File.Exists(path) ? Results.File(path, "application/zip", Path.GetFileName(path)) : Results.NotFound();
 });
 api.MapPost("/mods/{id:guid}/enable", async (Guid id, ModService mods, CancellationToken ct) => { await mods.SetEnabled(id, true, ct); return Results.NoContent(); }).RequireAntiforgery();

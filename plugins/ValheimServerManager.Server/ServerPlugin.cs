@@ -27,7 +27,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager";
     public const string PluginName = "Server Manager";
-    public const string PluginVersion = "2.5.1";
+    public const string PluginVersion = "2.5.2";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.server";
     private const string ClientManifestRpc = "ValheimServerManager_Manifest_v1";
     private readonly ConcurrentQueue<Action> _mainThread = new();
@@ -37,6 +37,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private readonly Dictionary<ZRpc, ZNetPeer> _peersByRpc = new();
     private readonly Dictionary<long, bool> _companions = new();
     private readonly HashSet<long> _serverCharacterClients = new();
+    private readonly HashSet<long> _inventoryEditClients = new();
     private readonly HashSet<long> _characterEnforcementHandled = new();
     private readonly HashSet<long> _pendingCharacterProfiles = new();
     private readonly HashSet<long> _characterProfileSent = new();
@@ -305,24 +306,29 @@ public sealed class ServerPlugin : BaseUnityPlugin
                 case "access.admin.add": result = Access("m_adminList", data, true, "admin.added"); break;
                 case "access.admin.remove": result = Access("m_adminList", data, false, "admin.removed"); break;
                 case "inventory.request":
+                case "inventory.archive":
                     var peerId = (long?)data["peerId"] ?? 0;
                     if (!_companions.TryGetValue(peerId, out var inventoryAllowed)) throw new InvalidOperationException("The player's Server Manager runtime is not connected.");
                     if (!inventoryAllowed) throw new InvalidOperationException("The player has not enabled inventory inspection.");
+                    if (name == "inventory.archive" && !_inventoryEditClients.Contains(peerId)) throw new InvalidOperationException("The player needs Server Manager client 2.5.2 for offline inventory snapshots.");
                     _inventoryRequests[requestId] = Tuple.Create(peerId, DateTime.UtcNow);
-                    InvokePeer(ZNet.instance.GetPeers().FirstOrDefault(item => item.m_uid == peerId), "VSM_InventoryRequest", requestId);
+                    InvokePeer(ZNet.instance.GetPeers().FirstOrDefault(item => item.m_uid == peerId), name == "inventory.archive" ? "VSM_InventoryArchiveRequest" : "VSM_InventoryRequest", requestId);
                     return;
                 case "items.catalog":
                 case "items.give":
+                case "items.edit":
                     var targetPeerId = (long?)data["peerId"] ?? 0;
                     var targetPeer = ZNet.instance.GetPeers().FirstOrDefault(item => item.m_uid == targetPeerId && item.IsReady());
                     if (targetPeer == null || !_companions.TryGetValue(targetPeerId, out var allowed) || !allowed)
                         throw new InvalidOperationException("The player must be online with the Server Manager client and inventory sharing enabled.");
+                    if (name == "items.edit" && !_inventoryEditClients.Contains(targetPeerId))
+                        throw new InvalidOperationException("The player needs Server Manager client 2.5.2 for inventory editing.");
                     if (name == "items.catalog")
                     {
                         _inventoryRequests[requestId] = Tuple.Create(targetPeerId, DateTime.UtcNow);
                         InvokePeer(targetPeer, "VSM_ItemCatalogRequest", requestId);
                     }
-                    else
+                    else if (name == "items.give")
                     {
                         var prefab = ((string)data["prefab"] ?? "").Trim();
                         var quantity = (int?)data["quantity"] ?? 0;
@@ -331,6 +337,13 @@ public sealed class ServerPlugin : BaseUnityPlugin
                             throw new ArgumentException("Invalid item, quantity, or quality.");
                         _giveRequests[requestId] = Tuple.Create(targetPeerId, DateTime.UtcNow);
                         InvokePeer(targetPeer, "VSM_GiveItem", requestId, prefab, quantity, quality);
+                    }
+                    else
+                    {
+                        var operation = data.ToString(Formatting.None);
+                        if (operation.Length > 2048) throw new ArgumentException("Inventory edit is too large.");
+                        _giveRequests[requestId] = Tuple.Create(targetPeerId, DateTime.UtcNow);
+                        InvokePeer(targetPeer, "VSM_EditItem", requestId, operation);
                     }
                     return;
                 default: throw new InvalidOperationException("Unsupported command: " + name);
@@ -489,7 +502,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
             ping = p.m_rpc != null ? (int?)(p.m_rpc.GetTimeSinceLastPing() * 1000f) : null,
             companion = _companions.ContainsKey(p.m_uid),
             inventoryAllowed = _companions.TryGetValue(p.m_uid, out var allowed) && allowed,
-            serverCharacter = _serverCharacterClients.Contains(p.m_uid)
+            serverCharacter = _serverCharactersEnabled.Value && _serverCharacterClients.Contains(p.m_uid)
         }).ToArray();
         Enqueue(new { type = "snapshot", payload = new { players } });
         var enabled = _discordApplicationId.Length is >= 17 and <= 20 && _discordApplicationId.All(character => character is >= '0' and <= '9');
@@ -551,7 +564,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
             var zdo = ZDOMan.instance.GetZDO(peer.m_characterID); if (zdo == null) continue;
             var dead = zdo.GetBool("dead".GetStableHashCode());
             _dead.TryGetValue(peer.m_characterID, out var wasDead);
-            if (dead && !wasDead) Event("player.died", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), position = zdo.GetPosition() });
+            if (dead && !wasDead) Event("player.died", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), position = EventPosition(zdo.GetPosition()) });
             _dead[peer.m_characterID] = dead;
         }
     }
@@ -609,7 +622,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
                 || (_companions.TryGetValue(peer.m_uid, out var allowed) && allowed)
                 || _scheduledKicks.ContainsKey(peer.m_uid)
                 || !_inspectionEnforcementHandled.Add(peer.m_uid)) continue;
-            const string reason = "This realm requires live, read-only inventory and character inspection by authenticated administrators. Install Server Manager and enable Privacy > AllowInventoryInspection in its client configuration, then reconnect. No inventory snapshots are saved or sent to webhooks.";
+            const string reason = "This realm requires inventory and character inspection by authenticated administrators. Install Server Manager and enable Privacy > AllowInventoryInspection in its client configuration, then reconnect. The manager saves the last known inventory for offline administration; snapshots are not sent to webhooks.";
             ScheduleKick(peer, "Inventory sharing required", reason, reason, "inspection.client.required");
             if (_scheduledKicks.TryGetValue(peer.m_uid, out var kick)) kick.InspectionRequirement = true;
         }
@@ -727,6 +740,9 @@ public sealed class ServerPlugin : BaseUnityPlugin
         var firstHello = !_companions.TryGetValue(sender, out var previousInventory);
         _companions[sender] = inventoryAllowed;
         var characterCapable = System.Version.TryParse(companionVersion, out var version) && version >= new System.Version(1, 2, 0);
+        var editCapable = version != null && version >= new System.Version(2, 5, 2);
+        if (editCapable) _inventoryEditClients.Add(sender);
+        else _inventoryEditClients.Remove(sender);
         var previouslyCapable = _serverCharacterClients.Contains(sender);
         if (characterCapable) _serverCharacterClients.Add(sender);
         else _serverCharacterClients.Remove(sender);
@@ -899,6 +915,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         _companions.Remove(peer.m_uid);
         _inspectionEnforcementHandled.Remove(peer.m_uid);
         _serverCharacterClients.Remove(peer.m_uid);
+        _inventoryEditClients.Remove(peer.m_uid);
         _characterEnforcementHandled.Remove(peer.m_uid);
         _pendingCharacterProfiles.Remove(peer.m_uid);
         _characterProfileSent.Remove(peer.m_uid);
@@ -927,7 +944,12 @@ public sealed class ServerPlugin : BaseUnityPlugin
         }
         catch (Exception exception) { Logger.LogWarning($"Could not relay the client mod manifest: {exception.GetBaseException().Message}"); }
     }
-    internal void Event(string eventType, object data, string source = "server", string confidence = "authoritative") => Enqueue(new { type = "event", payload = new { eventType, source, confidence, data } });
+    internal void Event(string eventType, object data, string source = "server", string confidence = "authoritative")
+    {
+        try { Enqueue(new { type = "event", payload = new { eventType, source, confidence, data } }); }
+        catch (Exception exception) { Logger.LogWarning($"Could not send {eventType} event: {exception.GetBaseException().Message}"); }
+    }
+    private static object EventPosition(Vector3 position) => new { x = position.x, y = position.y, z = position.z };
     private void Reply(string requestId, object payload) => Enqueue(new { type = "commandResult", requestId, payload });
     private void Enqueue(object message) => _outgoing.Enqueue(JsonConvert.SerializeObject(message, Formatting.None));
     private void TryRegisterClientRpcs()
@@ -1115,7 +1137,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     [HarmonyPatch(typeof(ZoneSystem), "SetGlobalKey", typeof(string))]
     private static class GlobalKeyPatch { private static void Postfix(string name) { Instance.Event(name != null && name.StartsWith("defeated_") ? "boss.progression.unlocked" : "world.global_key.added", new { key = name }); } }
     [HarmonyPatch(typeof(RandEventSystem), "SetRandomEvent")]
-    private static class RaidPatch { private static void Postfix(RandomEvent ev, Vector3 pos) => Instance.Event(ev == null ? "raid.ended" : "raid.started", new { name = ev?.m_name, position = pos }); }
+    private static class RaidPatch { private static void Postfix(RandomEvent ev, Vector3 pos) => Instance.Event(ev == null ? "raid.ended" : "raid.started", new { name = ev?.m_name, position = EventPosition(pos) }); }
     [HarmonyPatch(typeof(EnvMan), "UpdateTriggers")]
     private static class DayPatch
     {
@@ -1142,7 +1164,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     {
         private static void Prefix(Character __instance)
         {
-            if (__instance != null && __instance.IsBoss()) Instance.Event("boss.killed", new { boss = __instance.GetHoverName(), position = __instance.transform.position });
+            if (__instance != null && __instance.IsBoss()) Instance.Event("boss.killed", new { boss = __instance.GetHoverName(), position = EventPosition(__instance.transform.position) });
         }
     }
     [HarmonyPatch(typeof(Talker), "RPC_Say")]

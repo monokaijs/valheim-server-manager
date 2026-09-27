@@ -5,6 +5,11 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
+FROM golang:1.26.8-bookworm AS fch-build
+WORKDIR /src/tools/fchbridge
+COPY tools/fchbridge/ ./
+RUN go mod download && CGO_ENABLED=0 go build -trimpath -o /out/fchbridge .
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS app-build
 WORKDIR /src
 COPY Directory.Build.props ValheimServerManager.slnx ./
@@ -29,6 +34,7 @@ RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-in
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=app-build /out ./
+COPY --from=fch-build /out/fchbridge ./fchbridge
 COPY bepinex-pack.version ./
 COPY thunderstore/icon.png ./icon.png
 COPY plugins/ ./plugins/

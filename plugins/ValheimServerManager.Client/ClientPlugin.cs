@@ -8,6 +8,7 @@ using BepInEx;
 using BepInEx.Configuration;
 using HarmonyLib;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using ValheimServerManager.ClientSupport;
 
@@ -18,14 +19,13 @@ public sealed class ClientPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager.client";
     public const string PluginName = "Valheim Server Manager Client";
-    public const string PluginVersion = "2.5.1";
+    public const string PluginVersion = "2.5.2";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.client";
     internal static ClientPlugin Instance { get; private set; }
     private ConfigEntry<bool> _allowInventory;
     private bool? _advertisedInventory;
     private bool? _inspectionPolicy;
     private ConfigEntry<bool> _allowTelemetry;
-    private ConfigEntry<bool> _enableDiscordActivity;
     private DiscordActivityClient _discordActivity;
     private string _discordApplicationId;
     private string _discordServerName;
@@ -71,9 +71,8 @@ public sealed class ClientPlugin : BaseUnityPlugin
         Instance = this;
         _discordActivity = new DiscordActivityClient();
         MigrateLegacyConfig();
-        _allowInventory = Config.Bind("Privacy", "AllowInventoryInspection", true, "Allow the connected server's authenticated administrators to inspect current stats and inventory, including a live view. Required to join Server Manager realms.");
+        _allowInventory = Config.Bind("Privacy", "AllowInventoryInspection", true, "Allow authenticated server administrators to inspect and edit inventory. The manager stores a last known inventory snapshot for offline administration. Required to join Server Manager realms.");
         _allowTelemetry = Config.Bind("Privacy", "AllowDetailedTelemetry", false, "Share death and biome events with the connected server.");
-        _enableDiscordActivity = Config.Bind("Discord", "ShowServerActivity", false, "Show the connected server name and online player count on your Discord profile while playing. Requires Discord desktop and a server-configured Discord application ID.");
         _enableServerCharacters = Config.Bind("ServerCharacters", "Enabled", true, "Allow this server to make its native character profile authoritative for this session.");
         if (!NoticeInputGuard.Install(new Harmony(PluginGuid))) Logger.LogWarning("The game menu input guard is unavailable on this Valheim build.");
         Harmony.CreateAndPatchAll(typeof(DeathPatch), PluginGuid);
@@ -101,7 +100,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
     {
         _notices.Tick(Player.m_localPlayer != null);
         if (Player.m_localPlayer == null) _discordRegion = null;
-        else if (_enableDiscordActivity.Value && Time.unscaledTime >= _nextDiscordRegionCheck)
+        else if (_serverRpc != null && !string.IsNullOrEmpty(_discordApplicationId) && Time.unscaledTime >= _nextDiscordRegionCheck)
         {
             _nextDiscordRegionCheck = Time.unscaledTime + 1f;
             var biome = Player.m_localPlayer.GetCurrentBiome().ToString();
@@ -114,7 +113,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
                 _ => biome
             };
         }
-        _discordActivity?.SetActivity(_enableDiscordActivity.Value && _serverRpc != null ? _discordApplicationId : null,
+        _discordActivity?.SetActivity(_serverRpc != null ? _discordApplicationId : null,
             _discordServerName, _discordWorldName, _discordPlayerCount, _discordMaxPlayers, _discordRegion,
             _discordDetailsTemplate, _discordStateTemplate, _discordImageUrl);
         if (ZNet.instance == null || ZNet.instance.IsServer())
@@ -125,8 +124,10 @@ public sealed class ClientPlugin : BaseUnityPlugin
         if (!ReferenceEquals(_registeredRouter, ZRoutedRpc.instance) && ZRoutedRpc.instance != null)
         {
             ZRoutedRpc.instance.Register<string>("VSM_InventoryRequest", OnInventoryRequest);
+            ZRoutedRpc.instance.Register<string>("VSM_InventoryArchiveRequest", OnInventoryArchiveRequest);
             ZRoutedRpc.instance.Register<string>("VSM_ItemCatalogRequest", OnItemCatalogRequest);
             ZRoutedRpc.instance.Register<string, string, int, int>("VSM_GiveItem", OnGiveItem);
+            ZRoutedRpc.instance.Register<string, string>("VSM_EditItem", OnEditItem);
             ZRoutedRpc.instance.Register<bool, string, bool>("VSM_CharacterProfile", OnCharacterProfile);
             ZRoutedRpc.instance.Register("VSM_CharacterCheckpoint", OnCharacterCheckpoint);
             ZRoutedRpc.instance.Register<string, string>("VSM_AdminNotice", OnAdminNotice);
@@ -135,7 +136,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         if (_serverRpc != null && (_handshake.TrySendHello(Time.unscaledTime) || (_handshake.Active && _advertisedInventory != _allowInventory.Value)))
         {
             _advertisedInventory = _allowInventory.Value;
-            InvokeServer("VSM_ClientHello", _allowInventory.Value, _enableServerCharacters.Value ? PluginVersion : "");
+            InvokeServer("VSM_ClientHello", _allowInventory.Value, PluginVersion);
             Logger.LogDebug("Sent VSM capability handshake to the server.");
         }
         if (_serverRpc != null && _modCatalog?.RequiredReceipt == true && _modCatalog.CanAcknowledge
@@ -169,7 +170,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         _inspectionPolicy = required;
         if (!required || _allowInventory.Value) return;
         QueueAdminNotice("Inventory inspection required",
-            "This realm requires live inventory and character inspection by authenticated administrators. Enable Privacy > AllowInventoryInspection in the Server Manager client configuration and reconnect, or choose another realm. Your privacy setting has not been changed; this connection will be refused after the grace period.");
+            "This realm requires inventory and character inspection by authenticated administrators and saves a last known inventory for offline administration. Enable Privacy > AllowInventoryInspection in the Server Manager client configuration and reconnect, or choose another realm. Your privacy setting has not been changed; this connection will be refused after the grace period.");
     }
 
     private void OnServerPolicy(bool serverCharacters, int timeoutSeconds)
@@ -435,8 +436,10 @@ public sealed class ClientPlugin : BaseUnityPlugin
             __0.m_rpc.Register<bool>("VSM_InspectionPolicy", (rpc, required) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInspectionPolicy(required); });
             __0.m_rpc.Register<bool, int>("VSM_ServerPolicy", (rpc, required, timeout) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnServerPolicy(required, timeout); });
             __0.m_rpc.Register<string>("VSM_InventoryRequest", (rpc, requestId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInventoryRequest(__0.m_uid, requestId); });
+            __0.m_rpc.Register<string>("VSM_InventoryArchiveRequest", (rpc, requestId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInventoryArchiveRequest(__0.m_uid, requestId); });
             __0.m_rpc.Register<string>("VSM_ItemCatalogRequest", (rpc, requestId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnItemCatalogRequest(__0.m_uid, requestId); });
             __0.m_rpc.Register<string, string, int, int>("VSM_GiveItem", (rpc, requestId, prefab, quantity, quality) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnGiveItem(__0.m_uid, requestId, prefab, quantity, quality); });
+            __0.m_rpc.Register<string, string>("VSM_EditItem", (rpc, requestId, json) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnEditItem(__0.m_uid, requestId, json); });
             __0.m_rpc.Register<bool, string, bool>("VSM_CharacterProfile", (rpc, found, encoded, rejectPreviouslyUsed) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnCharacterProfile(__0.m_uid, found, encoded, rejectPreviouslyUsed); });
             __0.m_rpc.Register("VSM_CharacterCheckpoint", rpc => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnCharacterCheckpoint(__0.m_uid); });
             __0.m_rpc.Register<string, string>("VSM_AdminNotice", (rpc, title, message) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.QueueAdminNotice(title, message); });
@@ -462,7 +465,10 @@ public sealed class ClientPlugin : BaseUnityPlugin
         }
     }
 
-    private void OnInventoryRequest(long sender, string requestId)
+    private void OnInventoryRequest(long sender, string requestId) => OnInventoryRequest(sender, requestId, true);
+    private void OnInventoryArchiveRequest(long sender, string requestId) => OnInventoryRequest(sender, requestId, false);
+
+    private void OnInventoryRequest(long sender, string requestId, bool includeIcons)
     {
         var server = ServerPeerId();
         if (_serverRpc == null || sender != server || string.IsNullOrEmpty(requestId) || requestId.Length > 100) return;
@@ -479,7 +485,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
             return;
         }
         _nextInventoryRequest = Time.unscaledTime + 1f;
-        try { CaptureInventory(requestId, player); }
+        try { CaptureInventory(requestId, player, includeIcons); }
         catch (Exception error)
         {
             Logger.LogWarning("Could not prepare inventory snapshot: " + error.Message);
@@ -554,6 +560,67 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void GiveReply(string requestId, object payload) => InvokeServer("VSM_GiveResponse", requestId, JsonConvert.SerializeObject(payload));
 
+    private void OnEditItem(long sender, string requestId, string json)
+    {
+        if (_serverRpc == null || sender != ServerPeerId() || string.IsNullOrEmpty(requestId) || requestId.Length > 100) return;
+        if (!_allowInventory.Value || Player.m_localPlayer == null || json == null || json.Length > 2048)
+        { GiveReply(requestId, new { ok = false, error = "The player inventory is unavailable." }); return; }
+        try
+        {
+            var edit = JObject.Parse(json);
+            var action = (string)edit["action"];
+            var prefab = (string)edit["prefab"];
+            var x = (int?)edit["x"] ?? -1;
+            var y = (int?)edit["y"] ?? -1;
+            var expectedStack = (int?)edit["expectedStack"] ?? 0;
+            var expectedQuality = (int?)edit["expectedQuality"] ?? 0;
+            var inventory = Player.m_localPlayer.GetInventory();
+            var item = inventory.GetAllItems().FirstOrDefault(entry => entry.m_gridPos.x == x && entry.m_gridPos.y == y);
+            if (item == null || item.m_dropPrefab == null || item.m_dropPrefab.name != prefab || item.m_stack != expectedStack || item.m_quality != expectedQuality)
+                throw new InvalidOperationException("The item changed. Refresh the live inventory and try again.");
+            if (action == "remove") RemoveEditedItem(inventory, item);
+            else if (action == "replace")
+            {
+                var stack = (int?)edit["stack"] ?? 0;
+                var quality = (int?)edit["quality"] ?? 0;
+                var durability = (float?)edit["durability"] ?? -1f;
+                if (stack < 1 || stack > Math.Max(1, item.m_shared.m_maxStackSize) || quality < 1 || quality > Math.Max(1, item.m_shared.m_maxQuality) ||
+                    durability < 0 || float.IsNaN(durability) || float.IsInfinity(durability))
+                    throw new ArgumentException("Stack, quality, or durability is out of range for this item.");
+                item.m_stack = stack;
+                item.m_quality = quality;
+                item.m_durability = durability;
+                NotifyInventoryChanged(inventory);
+            }
+            else throw new ArgumentException("Unsupported inventory edit.");
+            GiveReply(requestId, new { ok = true, action, prefab, x, y });
+            UploadCharacter();
+        }
+        catch (Exception exception)
+        {
+            GiveReply(requestId, new { ok = false, error = exception.Message });
+        }
+    }
+
+    private static void RemoveEditedItem(Inventory inventory, ItemDrop.ItemData item)
+    {
+        var method = typeof(Inventory).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            .FirstOrDefault(candidate => candidate.Name == "RemoveItem" && candidate.GetParameters().Length >= 1 &&
+                candidate.GetParameters()[0].ParameterType == typeof(ItemDrop.ItemData) &&
+                candidate.GetParameters().Skip(1).All(parameter => parameter.IsOptional));
+        if (method == null) throw new MissingMethodException("Inventory.RemoveItem");
+        var args = method.GetParameters().Select((parameter, index) => index == 0 ? (object)item : parameter.DefaultValue).ToArray();
+        method.Invoke(inventory, args);
+        if (inventory.GetAllItems().Contains(item)) throw new InvalidOperationException("Item could not be removed.");
+    }
+
+    private static void NotifyInventoryChanged(Inventory inventory)
+    {
+        var method = typeof(Inventory).GetMethod("Changed", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
+        if (method == null) throw new MissingMethodException("Inventory.Changed");
+        method.Invoke(inventory, null);
+    }
+
     private static void AddGivenItem(Inventory inventory, string prefab, int stack, int quality)
     {
         // Valheim builds differ in the optional flags after the six stable item arguments.
@@ -569,7 +636,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         method.Invoke(inventory, args);
     }
 
-    private void CaptureInventory(string requestId, Player player)
+    private void CaptureInventory(string requestId, Player player, bool includeIcons)
     {
         var inventory = player.GetInventory();
         var icons = new Dictionary<string, string>();
@@ -578,7 +645,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         {
             var prefab = item.m_dropPrefab != null ? item.m_dropPrefab.name : item.m_shared.m_name;
             var iconKey = prefab + ":" + item.m_variant;
-            if (!sprites.ContainsKey(iconKey)) sprites[iconKey] = item.GetIcon();
+            if (includeIcons && !sprites.ContainsKey(iconKey)) sprites[iconKey] = item.GetIcon();
             return new
             {
                 prefab,
@@ -633,7 +700,8 @@ public sealed class ClientPlugin : BaseUnityPlugin
             items,
             icons
         };
-        _inventoryCapture = StartCoroutine(ReplyWithIcons(requestId, snapshot, sprites, icons, _serverRpc));
+        if (includeIcons) _inventoryCapture = StartCoroutine(ReplyWithIcons(requestId, snapshot, sprites, icons, _serverRpc));
+        else Reply(requestId, snapshot);
     }
 
     private IEnumerator ReplyWithIcons(string requestId, object snapshot, Dictionary<string, Sprite> sprites,

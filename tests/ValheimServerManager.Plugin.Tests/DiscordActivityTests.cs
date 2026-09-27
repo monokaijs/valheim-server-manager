@@ -15,7 +15,7 @@ namespace ValheimServerManager.Plugin.Tests;
 public sealed class DiscordActivityTests
 {
     [Fact]
-    public async Task PublishesServerActivityAndClearsItOnOptOut()
+    public async Task PublishesServerActivityAndClearsItWhenServerDisables()
     {
         var name = "vsm-discord-test-" + Guid.NewGuid().ToString("N")[..12] + "-";
         if (OperatingSystem.IsWindows())

@@ -1,15 +1,82 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace ValheimServerManager.Services;
 
 public sealed record ServerCharacterFile(string PlatformId, string CharacterName, string FileName, long Size, DateTimeOffset ModifiedAt, string Sha256);
+public sealed record CharacterInventoryEdit(string Action, string? Prefab, int Quantity, int Quality, int X, int Y, JsonElement? Item, string Revision, int MaxStack = 1);
+public sealed record CharacterInventory(string CharacterName, string Revision, JsonElement Items, JsonElement? Catalog, int Given = 0);
 
 public sealed partial class ServerCharacterService(IConfiguration configuration, ServerState state)
 {
     public const long MaxProfileBytes = 2 * 1024 * 1024;
     private string CharacterPath => Path.Combine(configuration["VSM_SAVE_PATH"] ?? "/data/worlds", "characters_local");
     private string PluginPath => configuration["VSM_BEPINEX_PATH"] ?? "/data/server/BepInEx";
+    private readonly SemaphoreSlim _inventoryGate = new(1, 1);
+
+    public async Task<CharacterInventory> Inventory(string fileName, CharacterInventoryEdit? edit, CancellationToken cancellationToken)
+    {
+        await _inventoryGate.WaitAsync(cancellationToken);
+        try
+        {
+            var character = List().SingleOrDefault(item => string.Equals(item.FileName, fileName, StringComparison.Ordinal));
+            if (character is null) throw new FileNotFoundException("Server-owned character was not found.");
+            if (state.Players.Any(player => SamePlatform(player.PlatformId, character.PlatformId)))
+                throw new InvalidOperationException("The player is online. Edit their live inventory or wait for them to leave.");
+            if (edit is not null && !string.Equals(edit.Revision, character.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The character save changed. Refresh the inventory before editing.");
+            var path = Path.Combine(CharacterPath, character.FileName);
+            var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+            ValidateNativeProfile(bytes);
+            var command = new { action = edit?.Action ?? "inspect", profile = Convert.ToBase64String(bytes), prefab = edit?.Prefab,
+                quantity = edit?.Quantity, quality = edit?.Quality, maxStack = edit?.MaxStack, x = edit?.X, y = edit?.Y, item = edit?.Item };
+            var start = new ProcessStartInfo(configuration["VSM_FCH_BRIDGE_PATH"] ?? Path.Combine(AppContext.BaseDirectory, "fchbridge"))
+            {
+                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true
+            };
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("Character editor could not start.");
+            await process.StandardInput.WriteAsync(JsonSerializer.Serialize(command));
+            process.StandardInput.Close();
+            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var error = await process.StandardError.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
+            if (process.ExitCode != 0) throw new InvalidDataException(error.Trim().Length > 0 ? error.Trim() : "Character save format is unsupported.");
+            using var result = JsonDocument.Parse(output);
+            var root = result.RootElement;
+            var given = root.TryGetProperty("given", out var delivered) ? delivered.GetInt32() : 0;
+            if (edit is not null)
+            {
+                if (!root.TryGetProperty("profile", out var encoded)) throw new InvalidDataException("Character editor did not return a profile.");
+                var updated = Convert.FromBase64String(encoded.GetString() ?? "");
+                if (updated.Length > MaxProfileBytes) throw new InvalidDataException("Edited character exceeds the size limit.");
+                ValidateNativeProfile(updated);
+                if (state.Players.Any(player => SamePlatform(player.PlatformId, character.PlatformId)))
+                    throw new InvalidOperationException("The player joined during the edit. Refresh their live inventory.");
+                await using (var current = File.OpenRead(path))
+                    if (!string.Equals(Convert.ToHexString(await SHA256.HashDataAsync(current, cancellationToken)), character.Sha256, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("The character save changed during the edit. Refresh the inventory.");
+                var backupDirectory = Path.Combine(CharacterPath, "vsm-admin-backups");
+                Directory.CreateDirectory(backupDirectory);
+                var backup = Path.Combine(backupDirectory, $"{Path.GetFileNameWithoutExtension(path)}.{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss-fff}.fch");
+                File.Copy(path, backup, false);
+                var temporary = Path.Combine(CharacterPath, $".vsm-edit-{Guid.NewGuid():N}.tmp");
+                try
+                {
+                    await File.WriteAllBytesAsync(temporary, updated, cancellationToken);
+                    File.Move(temporary, path, true);
+                }
+                finally { if (File.Exists(temporary)) File.Delete(temporary); }
+                bytes = updated;
+            }
+            return new CharacterInventory(root.GetProperty("name").GetString() ?? character.CharacterName,
+                Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), root.GetProperty("items").Clone(),
+                root.TryGetProperty("catalog", out var catalog) ? catalog.Clone() : null, given);
+        }
+        finally { _inventoryGate.Release(); }
+    }
 
     public bool IsInstalled => Directory.Exists(PluginPath) && Directory.EnumerateFiles(PluginPath, "ValheimServerManager.Server.dll", SearchOption.AllDirectories).Any();
     public bool ImportAvailable => state.Status == "stopped";
@@ -89,6 +156,12 @@ public sealed partial class ServerCharacterService(IConfiguration configuration,
         if (CanonicalSteam().IsMatch(value)) return value;
         throw new ArgumentException("Owner must be a 17-digit Steam64 ID or canonical Steam_<id> value.");
     }
+
+    public static bool SamePlatform(string left, string right) =>
+        string.Equals(CanonicalPlatform(left), CanonicalPlatform(right), StringComparison.OrdinalIgnoreCase);
+
+    public static string CanonicalPlatform(string platformId) =>
+        Steam64().IsMatch(platformId ?? "") ? "Steam_" + platformId : platformId ?? "";
 
     public static string CharacterNameFromFile(string uploadName)
     {

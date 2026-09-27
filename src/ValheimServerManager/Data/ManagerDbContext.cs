@@ -98,6 +98,25 @@ public sealed class KnownPlayer
     public DateTimeOffset LastSeenAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
+public sealed class SavedInventory
+{
+    public string PlatformId { get; set; } = "";
+    public DateTimeOffset CapturedAt { get; set; }
+    public string SnapshotJson { get; set; } = "{}";
+}
+
+public sealed class PendingInventoryEdit
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string PlatformId { get; set; } = "";
+    public string Action { get; set; } = "";
+    public string PayloadJson { get; set; } = "{}";
+    public string Status { get; set; } = "pending";
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? CompletedAt { get; set; }
+    public string Error { get; set; } = "";
+}
+
 public sealed class ManagerDbContext(DbContextOptions<ManagerDbContext> options)
     : DbContext(options)
 {
@@ -109,6 +128,8 @@ public sealed class ManagerDbContext(DbContextOptions<ManagerDbContext> options)
     public DbSet<ApiToken> ApiTokens => Set<ApiToken>();
     public DbSet<JoinRequestRecord> JoinRequests => Set<JoinRequestRecord>();
     public DbSet<KnownPlayer> KnownPlayers => Set<KnownPlayer>();
+    public DbSet<SavedInventory> SavedInventories => Set<SavedInventory>();
+    public DbSet<PendingInventoryEdit> PendingInventoryEdits => Set<PendingInventoryEdit>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -120,5 +141,7 @@ public sealed class ManagerDbContext(DbContextOptions<ManagerDbContext> options)
         builder.Entity<ApiToken>().HasIndex(x => x.TokenHash).IsUnique();
         builder.Entity<JoinRequestRecord>().HasIndex(x => new { x.Status, x.LastAttemptAt });
         builder.Entity<KnownPlayer>().HasKey(x => x.PlatformId);
+        builder.Entity<SavedInventory>().HasKey(x => x.PlatformId);
+        builder.Entity<PendingInventoryEdit>().HasIndex(x => new { x.PlatformId, x.Status, x.CreatedAt });
     }
 }

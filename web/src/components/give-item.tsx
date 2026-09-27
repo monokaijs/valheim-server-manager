@@ -8,6 +8,17 @@ type CatalogItem = { prefab: string; name: string; maxStack: number; maxQuality:
 type Catalog = { ok: boolean; items: CatalogItem[] }
 type GiveResult = { given: number; requested: number; error?: string }
 
+function matchRank(item: CatalogItem, term: string) {
+  const name = item.name.toLowerCase()
+  const prefab = item.prefab.toLowerCase()
+  if (name === term || prefab === term) return 0
+  if (name.startsWith(term)) return 1
+  if (prefab.startsWith(term)) return 2
+  if (name.includes(term)) return 3
+  if (prefab.includes(term)) return 4
+  return 5
+}
+
 export function GiveItem({ peerKey, enabled }: { peerKey: string; enabled: boolean }) {
   const [items, setItems] = useState<CatalogItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -34,7 +45,10 @@ export function GiveItem({ peerKey, enabled }: { peerKey: string; enabled: boole
 
   const matches = useMemo(() => {
     const term = query.trim().toLowerCase()
-    return items.filter(item => `${item.name} ${item.prefab}`.toLowerCase().includes(term)).slice(0, 12)
+    if (!term) return items.slice(0, 12)
+    return items.filter(item => matchRank(item, term) < 5)
+      .sort((left, right) => matchRank(left, term) - matchRank(right, term)
+        || left.name.localeCompare(right.name) || left.prefab.localeCompare(right.prefab))
   }, [items, query])
   const choose = (item: CatalogItem) => {
     setSelected(item); setQuery(`${item.name} (${item.prefab})`); setQuality(value => Math.min(value, item.maxQuality)); setOpen(false); setMessage("")
