@@ -17,6 +17,8 @@ type Sample = { at: string; players: number; cpuPercent: number | null; memoryBy
 type Event = { id: string; type: string; occurredAt: string; player: string | null }
 type Monitor = { samples: Sample[]; events: Event[] }
 type Range = "15m" | "1h"
+type TrendMetric = "players" | "cpuPercent" | "memoryMiB"
+type TrendSample = Sample & { memoryMiB: number | null }
 
 const chartConfig = {
   players: { label: "Players", color: "var(--chart-1)" },
@@ -43,29 +45,51 @@ function Metric({ label, value, detail, icon: Icon, tone }: { label: string; val
   </div>
 }
 
-function TrendChart({ title, detail, data, metric, max, unit, empty }: {
-  title: string; detail: string; data: (Sample & { memoryMiB: number | null })[]
-  metric: "players" | "cpuPercent" | "memoryMiB"; max?: number; unit: string; empty: string
+const metricValue = (metric: TrendMetric, value: number) => {
+  if (metric === "players") return `${value} ${value === 1 ? "player" : "players"}`
+  if (metric === "cpuPercent") return `${value.toFixed(1)}%`
+  return `${Math.round(value).toLocaleString()} MB`
+}
+
+// Use a few round ticks so small CPU values fill the plot and labels stay readable.
+function chartTicks(metric: TrendMetric, peak: number) {
+  if (peak === 0) return metric === "memoryMiB" ? [0, 128, 256] : metric === "cpuPercent" ? [0, 0.5, 1] : [0, 1]
+  const roughStep = peak / 3
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep))
+  const step = [1, 2, 5, 10].map(value => value * magnitude).find(value => value >= roughStep) ?? 10 * magnitude
+  const interval = metric === "players" ? Math.max(1, Math.ceil(step)) : step
+  const upper = metric === "cpuPercent" ? Math.min(100, Math.ceil(peak * 1.08 / interval) * interval) : Math.ceil(peak * 1.08 / interval) * interval
+  return Array.from({ length: Math.round(upper / interval) + 1 }, (_, index) => Number((index * interval).toFixed(3)))
+}
+
+function TrendChart({ title, detail, data, metric, empty }: {
+  title: string; detail: string; data: TrendSample[]; metric: TrendMetric; empty: string
 }) {
-  const color = `var(--color-${metric})`
+  const color = chartConfig[metric].color
   const id = `fill-${metric}`
+  const values = data.map(point => point[metric]).filter((value): value is number => value != null)
+  const current = data.at(-1)?.[metric]
+  const peak = Math.max(0, ...values)
+  const ticks = chartTicks(metric, peak)
+  const hasData = data.length >= 2 && values.length > 0
   return <Card className="min-w-0 border border-border/70 bg-card shadow-none ring-0">
     <CardHeader className="flex flex-row items-start justify-between gap-3 pb-1">
-      <div><h2 className="text-sm font-semibold">{title}</h2><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div>
-      <span className="mt-0.5 size-2 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />
+      <div className="min-w-0"><h2 className="text-sm font-semibold">{title}</h2><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div>
+      {hasData && <div className="shrink-0 text-right"><div className="text-lg font-semibold leading-none tabular-nums" style={{ color }}>{current == null ? "—" : metricValue(metric, current)}</div><div className="mt-1 text-[11px] text-muted-foreground">Current</div></div>}
     </CardHeader>
     <CardContent className="pt-2">
-      {data.length < 2 || data.every(point => point[metric] == null) ? <div className="flex h-[210px] items-center justify-center text-sm text-muted-foreground">{empty}</div> :
+      {!hasData ? <div className="flex h-[210px] items-center justify-center text-sm text-muted-foreground">{empty}</div> :
         <ChartContainer config={chartConfig} className="h-[210px] w-full aspect-auto">
-          <AreaChart data={data} margin={{ top: 8, right: 4, bottom: 0, left: -16 }} accessibilityLayer>
-            <defs><linearGradient id={id} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={color} stopOpacity={0.22} /><stop offset="100%" stopColor={color} stopOpacity={0} /></linearGradient></defs>
-            <CartesianGrid vertical={false} stroke="var(--border)" strokeOpacity={0.55} />
-            <XAxis dataKey="at" axisLine={false} tickLine={false} tickMargin={10} minTickGap={48} tickFormatter={time} />
-            <YAxis axisLine={false} tickLine={false} tickMargin={6} width={38} domain={[0, max || "auto"]} tickFormatter={value => `${value}${unit}`} allowDecimals={metric !== "players"} />
-            <ChartTooltip cursor={{ stroke: "var(--border)" }} content={<ChartTooltipContent labelFormatter={(_, payload) => payload?.[0]?.payload?.at ? time(payload[0].payload.at) : ""} formatter={(value) => `${value}${unit}`} />} />
-            <Area dataKey={metric} type={metric === "players" ? "stepAfter" : "monotone"} connectNulls={false} stroke={color} strokeWidth={2} fill={`url(#${id})`} isAnimationActive={false} />
+          <AreaChart data={data} margin={{ top: 10, right: 10, bottom: 0, left: 0 }} accessibilityLayer>
+            <defs><linearGradient id={id} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={color} stopOpacity={0.18} /><stop offset="100%" stopColor={color} stopOpacity={0} /></linearGradient></defs>
+            <CartesianGrid vertical={false} stroke="var(--border)" strokeOpacity={0.45} />
+            <XAxis dataKey="at" axisLine={false} tickLine={false} tickMargin={10} minTickGap={50} tickFormatter={time} />
+            <YAxis axisLine={false} tickLine={false} tickMargin={8} width={metric === "memoryMiB" ? 48 : 42} domain={[0, ticks.at(-1)!]} ticks={ticks} tickFormatter={value => metric === "cpuPercent" ? `${value}%` : Number(value).toLocaleString()} allowDecimals={metric !== "players"} />
+            <ChartTooltip cursor={{ stroke: "var(--border)" }} content={<ChartTooltipContent labelFormatter={(_, payload) => payload?.[0]?.payload?.at ? time(payload[0].payload.at) : ""} formatter={(value) => metricValue(metric, Number(value))} />} />
+            <Area dataKey={metric} type={metric === "players" ? "stepAfter" : "linear"} connectNulls={false} stroke={color} strokeWidth={2} fill={`url(#${id})`} isAnimationActive={false} />
           </AreaChart>
         </ChartContainer>}
+      {hasData && <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2 text-[11px] text-muted-foreground"><span>{metric === "players" && peak === 0 ? "No players in this range" : "Peak in this range"}</span><span className="font-medium tabular-nums text-foreground">{metricValue(metric, peak)}</span></div>}
     </CardContent>
   </Card>
 }
@@ -119,9 +143,9 @@ export function MonitorDashboard({ status, refresh }: { status: MonitorStatus; r
     </div>
 
     <section aria-label="Monitor charts" className="grid gap-3 lg:grid-cols-2">
-      <TrendChart title="Player timeline" detail="Concurrent players" data={data} metric="players" unit="" empty="Collecting player samples…" />
-      <TrendChart title="CPU usage" detail="Share of total host CPU capacity" data={data} metric="cpuPercent" max={100} unit="%" empty="CPU samples appear while the server is running." />
-      <TrendChart title="RAM usage" detail="Valheim process memory" data={data} metric="memoryMiB" unit=" MB" empty="RAM samples appear while the server is running." />
+      <TrendChart title="Player timeline" detail="Concurrent players" data={data} metric="players" empty="Collecting player samples…" />
+      <TrendChart title="CPU usage" detail="Share of total host CPU capacity" data={data} metric="cpuPercent" empty="CPU samples appear while the server is running." />
+      <TrendChart title="RAM usage" detail="Valheim process memory" data={data} metric="memoryMiB" empty="RAM samples appear while the server is running." />
       <Card className="min-w-0 border border-border/70 bg-card shadow-none ring-0">
         <CardHeader className="flex flex-row items-start justify-between gap-3 pb-1"><div><h2 className="text-sm font-semibold">Recent events</h2><p className="mt-1 text-xs text-muted-foreground">Latest server and player activity</p></div><Activity className="size-4 text-muted-foreground" /></CardHeader>
         <CardContent className="min-h-[210px] pt-2">

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added optional Discord Rich Presence for players, showing the server, online count, and current biome.
+- Added dashboard controls for Discord application ID, HTTPS activity artwork, and customizable details and state templates.
+- Added template variables for server and world names, online players, capacity, free slots, and each player's current biome.
+- Improved monitor trend charts with current and peak readings and clearer scaling.
+
 ## 2.4.0
 
 - Added a dashboard notification tool for one online player or everyone on the server.

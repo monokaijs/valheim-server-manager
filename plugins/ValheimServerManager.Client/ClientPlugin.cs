@@ -25,6 +25,18 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private bool? _advertisedInventory;
     private bool? _inspectionPolicy;
     private ConfigEntry<bool> _allowTelemetry;
+    private ConfigEntry<bool> _enableDiscordActivity;
+    private DiscordActivityClient _discordActivity;
+    private string _discordApplicationId;
+    private string _discordServerName;
+    private string _discordWorldName;
+    private string _discordRegion;
+    private string _discordDetailsTemplate = "{server}";
+    private string _discordStateTemplate = "{region} · {players} players online";
+    private string _discordImageUrl;
+    private int _discordPlayerCount;
+    private int _discordMaxPlayers = 10;
+    private float _nextDiscordRegionCheck;
     private ConfigEntry<bool> _enableServerCharacters;
     private ZRoutedRpc _registeredRouter;
     private readonly ClientHandshake _handshake = new();
@@ -57,9 +69,11 @@ public sealed class ClientPlugin : BaseUnityPlugin
             return;
         }
         Instance = this;
+        _discordActivity = new DiscordActivityClient();
         MigrateLegacyConfig();
         _allowInventory = Config.Bind("Privacy", "AllowInventoryInspection", true, "Allow the connected server's authenticated administrators to inspect current stats and inventory, including a live view. Required to join Server Manager realms.");
         _allowTelemetry = Config.Bind("Privacy", "AllowDetailedTelemetry", false, "Share death and biome events with the connected server.");
+        _enableDiscordActivity = Config.Bind("Discord", "ShowServerActivity", false, "Show the connected server name and online player count on your Discord profile while playing. Requires Discord desktop and a server-configured Discord application ID.");
         _enableServerCharacters = Config.Bind("ServerCharacters", "Enabled", true, "Allow this server to make its native character profile authoritative for this session.");
         if (!NoticeInputGuard.Install(new Harmony(PluginGuid))) Logger.LogWarning("The game menu input guard is unavailable on this Valheim build.");
         Harmony.CreateAndPatchAll(typeof(DeathPatch), PluginGuid);
@@ -86,6 +100,23 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private void Update()
     {
         _notices.Tick(Player.m_localPlayer != null);
+        if (Player.m_localPlayer == null) _discordRegion = null;
+        else if (_enableDiscordActivity.Value && Time.unscaledTime >= _nextDiscordRegionCheck)
+        {
+            _nextDiscordRegionCheck = Time.unscaledTime + 1f;
+            var biome = Player.m_localPlayer.GetCurrentBiome().ToString();
+            _discordRegion = biome switch
+            {
+                "None" => null,
+                "BlackForest" => "Black Forest",
+                "DeepNorth" => "Deep North",
+                "AshLands" => "Ashlands",
+                _ => biome
+            };
+        }
+        _discordActivity?.SetActivity(_enableDiscordActivity.Value && _serverRpc != null ? _discordApplicationId : null,
+            _discordServerName, _discordWorldName, _discordPlayerCount, _discordMaxPlayers, _discordRegion,
+            _discordDetailsTemplate, _discordStateTemplate, _discordImageUrl);
         if (ZNet.instance == null || ZNet.instance.IsServer())
         {
             if (_handshake.Active) ResetConnection();
@@ -343,6 +374,14 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void ResetConnection()
     {
+        _discordActivity?.SetActivity(null, null, null, 0, 0, null, null, null, null);
+        _discordApplicationId = _discordServerName = _discordWorldName = _discordRegion = null;
+        _discordDetailsTemplate = "{server}";
+        _discordStateTemplate = "{region} · {players} players online";
+        _discordImageUrl = null;
+        _discordPlayerCount = 0;
+        _discordMaxPlayers = 10;
+        _nextDiscordRegionCheck = 0f;
         _advertisedInventory = null;
         _inspectionPolicy = null;
         if (!string.IsNullOrEmpty(_temporaryProfileName))
@@ -378,6 +417,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void OnDestroy()
     {
+        _discordActivity?.Dispose();
         _notices.Dispose();
         ResetConnection();
         Harmony.UnpatchID(PluginGuid);
@@ -401,6 +441,24 @@ public sealed class ClientPlugin : BaseUnityPlugin
             __0.m_rpc.Register("VSM_CharacterCheckpoint", rpc => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnCharacterCheckpoint(__0.m_uid); });
             __0.m_rpc.Register<string, string>("VSM_AdminNotice", (rpc, title, message) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.QueueAdminNotice(title, message); });
             __0.m_rpc.Register<string>("ValheimServerManager_Manifest_v1", (rpc, json) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.ReceiveModCatalog(json); });
+            __0.m_rpc.Register<string>("VSM_DiscordActivity", (rpc, json) =>
+            {
+                if (!ReferenceEquals(rpc, Instance?._serverRpc)) return;
+                try
+                {
+                    if (json == null || json.Length > 4096) return;
+                    var activity = Newtonsoft.Json.Linq.JObject.Parse(json);
+                    Instance._discordApplicationId = (string)activity["applicationId"];
+                    Instance._discordServerName = (string)activity["serverName"];
+                    Instance._discordWorldName = (string)activity["worldName"];
+                    Instance._discordPlayerCount = Math.Max(0, Math.Min(1000, (int?)activity["players"] ?? 0));
+                    Instance._discordMaxPlayers = Math.Max(1, Math.Min(1000, (int?)activity["maxPlayers"] ?? 10));
+                    Instance._discordDetailsTemplate = (string)activity["detailsTemplate"] ?? "{server}";
+                    Instance._discordStateTemplate = (string)activity["stateTemplate"] ?? "{region} · {players} players online";
+                    Instance._discordImageUrl = (string)activity["imageUrl"];
+                }
+                catch (Exception) { Instance.Logger.LogDebug("Ignored malformed Discord activity settings from the server."); }
+            });
         }
     }
 

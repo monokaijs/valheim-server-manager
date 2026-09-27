@@ -27,7 +27,7 @@ public sealed class LiveHubCancellationTests
             await using var provider = InspectionAndFilesTests.Provider(root);
             await InspectionAndFilesTests.Initialize(provider);
             var config = provider.GetRequiredService<IConfiguration>();
-            var gateway = new AgentGateway(null!, null!, null!, null!, null!, null!, null!, null!, config,
+            var gateway = new AgentGateway(null!, null!, null!, null!, null!, null!, null!, null!, null!, config,
                 NullLogger<AgentGateway>.Instance);
             var inspection = new InventoryInspectionService(gateway, new ServerState(null!));
             var access = new AccessListService(config, gateway);

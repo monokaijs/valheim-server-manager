@@ -61,6 +61,7 @@ builder.Services.AddSingleton<ServerCharacterService>();
 builder.Services.AddSingleton<ServerCharacterSettingsService>();
 builder.Services.AddSingleton<ServerSettingsService>();
 builder.Services.AddSingleton<ServerMessageService>();
+builder.Services.AddSingleton<DiscordActivitySettingsService>();
 builder.Services.AddSingleton<ApiTokenService>();
 builder.Services.AddSingleton<JoinRequestService>();
 builder.Services.AddSingleton<PluginRegistryService>();
@@ -394,6 +395,15 @@ api.MapPut("/settings/messages", async (ServerMessageTemplates request, ServerMe
     var saved = await messages.Set(request, ct);
     await agent.PublishServerMessages(ct);
     await audit.Write("server.messages.update", "valheim");
+    return Results.Ok(saved);
+}).RequireAntiforgery();
+
+api.MapGet("/settings/discord-activity", async (DiscordActivitySettingsService settings, CancellationToken ct) => Results.Ok(await settings.Get(ct)));
+api.MapPut("/settings/discord-activity", async (DiscordActivitySettings request, DiscordActivitySettingsService settings, AgentGateway agent, AuditService audit, CancellationToken ct) =>
+{
+    var saved = await settings.Set(request, ct);
+    await agent.PublishDiscordActivitySettings(ct);
+    await audit.Write("discord.activity.update", "valheim", "success", $"enabled={saved.ApplicationId.Length > 0};image={saved.ImageUrl.Length > 0}");
     return Results.Ok(saved);
 }).RequireAntiforgery();
 

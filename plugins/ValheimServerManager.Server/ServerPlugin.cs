@@ -58,6 +58,12 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private readonly HashSet<long> _modEnforcementHandled = new();
     private volatile string _pluginRegistryMessage;
     private string _serverName = "Valheim Server";
+    private string _discordApplicationId = Environment.GetEnvironmentVariable("VSM_DISCORD_APPLICATION_ID") ?? "";
+    private string _discordDetailsTemplate = "{server}";
+    private string _discordStateTemplate = "{region} · {players} players online";
+    private string _discordImageUrl = "";
+    private string _discordWorldName = "Dedicated";
+    private bool _discordActivityWasEnabled;
     private string _welcomeMessage = "Welcome {player} to {server}.";
     private string _whitelistRejectedMessage = "You are not on the {server} whitelist. A join request was sent to the administrators.";
     private string _companionRequiredMessage = "{server} requires the Server Manager client runtime. Restart Valheim after Server Manager finishes installing it.";
@@ -236,6 +242,11 @@ public sealed class ServerPlugin : BaseUnityPlugin
                 _mainThread.Enqueue(() => ApplyServerMessages(message["payload"] as JObject));
                 continue;
             }
+            if ((string)message["type"] == "discordActivitySettings")
+            {
+                _mainThread.Enqueue(() => ApplyDiscordActivitySettings(message["payload"] as JObject));
+                continue;
+            }
             if ((string)message["type"] == "serverCharacterSettings")
             {
                 _mainThread.Enqueue(() => ApplyServerCharacterSettings(message["payload"] as JObject));
@@ -383,6 +394,19 @@ public sealed class ServerPlugin : BaseUnityPlugin
         Logger.LogInfo("Loaded customizable server messages from the manager.");
     }
 
+    private void ApplyDiscordActivitySettings(JObject payload)
+    {
+        if (payload == null) return;
+        var applicationId = ((string)payload["applicationId"] ?? "").Trim();
+        _discordApplicationId = applicationId.Length is >= 17 and <= 20 && applicationId.All(character => character is >= '0' and <= '9') ? applicationId : "";
+        _serverName = SafeText((string)payload["serverName"], 120, _serverName);
+        _discordWorldName = SafeText((string)payload["worldName"], 120, _discordWorldName);
+        _discordDetailsTemplate = SafeText((string)payload["detailsTemplate"], 128, "{server}");
+        _discordStateTemplate = SafeText((string)payload["stateTemplate"], 128, "{region} · {players} players online");
+        _discordImageUrl = SafeText((string)payload["imageUrl"], 300, "");
+        if (ZNet.instance != null && ZNet.instance.IsServer()) SendSnapshot();
+    }
+
     private void ApplyServerCharacterSettings(JObject payload)
     {
         if (payload == null) return;
@@ -468,6 +492,22 @@ public sealed class ServerPlugin : BaseUnityPlugin
             serverCharacter = _serverCharacterClients.Contains(p.m_uid)
         }).ToArray();
         Enqueue(new { type = "snapshot", payload = new { players } });
+        var enabled = _discordApplicationId.Length is >= 17 and <= 20 && _discordApplicationId.All(character => character is >= '0' and <= '9');
+        if (!enabled && !_discordActivityWasEnabled) return;
+        _discordActivityWasEnabled = enabled;
+        var discordPayload = JsonConvert.SerializeObject(new
+        {
+            applicationId = _discordApplicationId,
+            serverName = _serverName,
+            worldName = _discordWorldName,
+            players = players.Length,
+            maxPlayers = MaxPlayers,
+            detailsTemplate = _discordDetailsTemplate,
+            stateTemplate = _discordStateTemplate,
+            imageUrl = _discordImageUrl
+        }, Formatting.None);
+        foreach (var peer in ZNet.instance.GetPeers().Where(p => p != null && p.IsReady()))
+            InvokePeer(peer, "VSM_DiscordActivity", discordPayload);
     }
 
     private void PublishPluginRegistry()

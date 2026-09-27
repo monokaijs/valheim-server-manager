@@ -9,7 +9,8 @@ using ValheimServerManager.Models;
 namespace ValheimServerManager.Services;
 
 public sealed class AgentGateway(ServerState state, EventBus events, ClientModManifestService clientMods, JoinRequestService joinRequests,
-    PluginRegistryService pluginRegistry, ServerMessageService serverMessages, ServerCharacterSettingsService characterSettings,
+    PluginRegistryService pluginRegistry, ServerMessageService serverMessages, DiscordActivitySettingsService discordActivity,
+    ServerCharacterSettingsService characterSettings,
     PlayerDirectoryService directory, IConfiguration config, ILogger<AgentGateway> logger)
 {
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pending = new();
@@ -85,6 +86,13 @@ public sealed class AgentGateway(ServerState state, EventBus events, ClientModMa
         await Send(socket, new { type = "serverMessages", payload = await serverMessages.Payload(cancellationToken) }, cancellationToken);
     }
 
+    public async Task PublishDiscordActivitySettings(CancellationToken cancellationToken = default)
+    {
+        var socket = _socket;
+        if (socket?.State != WebSocketState.Open) return;
+        await Send(socket, new { type = "discordActivitySettings", payload = await discordActivity.Payload(cancellationToken) }, cancellationToken);
+    }
+
     public async Task PublishServerCharacterSettings(CancellationToken cancellationToken = default)
     {
         var socket = _socket;
@@ -127,6 +135,8 @@ public sealed class AgentGateway(ServerState state, EventBus events, ClientModMa
                     catch (Exception error) { logger.LogError(error, "Could not publish the client mod manifest to the server agent."); }
                     try { await PublishServerMessages(cancellationToken); }
                     catch (Exception error) { logger.LogError(error, "Could not publish server message templates to the server agent."); }
+                    try { await PublishDiscordActivitySettings(cancellationToken); }
+                    catch (Exception error) { logger.LogError(error, "Could not publish Discord activity settings to the server agent."); }
                     try { await PublishServerCharacterSettings(cancellationToken); }
                     catch (Exception error) { logger.LogError(error, "Could not publish server-character settings to the server agent."); }
                     break;
