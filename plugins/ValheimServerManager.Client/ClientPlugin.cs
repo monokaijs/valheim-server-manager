@@ -25,7 +25,6 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private bool? _advertisedInventory;
     private bool? _inspectionPolicy;
     private ConfigEntry<bool> _allowTelemetry;
-    private ConfigEntry<bool> _enableDiscordActivity;
     private DiscordActivityClient _discordActivity;
     private string _discordApplicationId;
     private string _discordServerName;
@@ -73,7 +72,6 @@ public sealed class ClientPlugin : BaseUnityPlugin
         MigrateLegacyConfig();
         _allowInventory = Config.Bind("Privacy", "AllowInventoryInspection", true, "Allow the connected server's authenticated administrators to inspect current stats and inventory, including a live view. Required to join Server Manager realms.");
         _allowTelemetry = Config.Bind("Privacy", "AllowDetailedTelemetry", false, "Share death and biome events with the connected server.");
-        _enableDiscordActivity = Config.Bind("Discord", "ShowServerActivity", false, "Show the connected server name and online player count on your Discord profile while playing. Requires Discord desktop and a server-configured Discord application ID.");
         _enableServerCharacters = Config.Bind("ServerCharacters", "Enabled", true, "Allow this server to make its native character profile authoritative for this session.");
         if (!NoticeInputGuard.Install(new Harmony(PluginGuid))) Logger.LogWarning("The game menu input guard is unavailable on this Valheim build.");
         Harmony.CreateAndPatchAll(typeof(DeathPatch), PluginGuid);
@@ -101,7 +99,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
     {
         _notices.Tick(Player.m_localPlayer != null);
         if (Player.m_localPlayer == null) _discordRegion = null;
-        else if (_enableDiscordActivity.Value && Time.unscaledTime >= _nextDiscordRegionCheck)
+        else if (_serverRpc != null && !string.IsNullOrEmpty(_discordApplicationId) && Time.unscaledTime >= _nextDiscordRegionCheck)
         {
             _nextDiscordRegionCheck = Time.unscaledTime + 1f;
             var biome = Player.m_localPlayer.GetCurrentBiome().ToString();
@@ -114,7 +112,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
                 _ => biome
             };
         }
-        _discordActivity?.SetActivity(_enableDiscordActivity.Value && _serverRpc != null ? _discordApplicationId : null,
+        _discordActivity?.SetActivity(_serverRpc != null ? _discordApplicationId : null,
             _discordServerName, _discordWorldName, _discordPlayerCount, _discordMaxPlayers, _discordRegion,
             _discordDetailsTemplate, _discordStateTemplate, _discordImageUrl);
         if (ZNet.instance == null || ZNet.instance.IsServer())
