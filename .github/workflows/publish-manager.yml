@@ -83,6 +83,7 @@ jobs:
           ./scripts/set-version.sh "$RELEASE_VERSION"
       - name: Verify control plane and dashboard
         run: |
+          bash -n docker/entrypoint.sh
           python3 scripts/check-bepinex-pack.py --latest
           python3 -m unittest discover -s tests -p test_bepinex_pack.py
           dotnet test ValheimServerManager.slnx

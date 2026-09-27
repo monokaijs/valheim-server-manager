@@ -40,7 +40,7 @@ COPY thunderstore/icon.png ./icon.png
 COPY plugins/ ./plugins/
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/install-bepinex-pack.py /install-bepinex-pack.py
-RUN chmod +x /entrypoint.sh
+RUN bash -n /entrypoint.sh && chmod +x /entrypoint.sh
 EXPOSE 8080/tcp 2456-2457/udp
 VOLUME ["/data/server", "/data/worlds", "/data/manager", "/data/logs"]
 ENTRYPOINT ["/entrypoint.sh"]
