@@ -7,7 +7,7 @@ using ValheimServerManager.Models;
 
 namespace ValheimServerManager.Services;
 
-public sealed class EventBus(IServiceScopeFactory scopes, IHubContext<LiveHub> hub)
+public sealed class EventBus(IServiceScopeFactory scopes, IHubContext<LiveHub> hub, MonitorService monitor)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -19,6 +19,7 @@ public sealed class EventBus(IServiceScopeFactory scopes, IHubContext<LiveHub> h
 
     private async Task PublishInternal(EventEnvelope envelope, Guid? subscriptionId)
     {
+        monitor.Record(envelope);
         await hub.Clients.All.SendAsync("event", envelope);
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ManagerDbContext>();

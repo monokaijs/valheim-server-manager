@@ -48,6 +48,7 @@ builder.Services.AddHttpClient("thunderstore", client => { client.Timeout = Time
 builder.Services.AddHttpClient("steam", client => { client.Timeout = TimeSpan.FromSeconds(15); client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/1.0"); });
 builder.Services.AddHttpClient("manager-updates", client => { client.Timeout = TimeSpan.FromSeconds(20); client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/1.6"); });
 builder.Services.AddSingleton<ServerState>();
+builder.Services.AddSingleton<MonitorService>();
 builder.Services.AddSingleton<InventoryInspectionService>();
 builder.Services.AddSingleton<EventBus>();
 builder.Services.AddSingleton<AgentGateway>();
@@ -71,6 +72,7 @@ builder.Services.AddSingleton<SteamProfileService>();
 builder.Services.AddSingleton<PlayerDirectoryService>();
 builder.Services.AddScoped<SteamAdminCookieEvents>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProcessSupervisor>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<MonitorService>());
 builder.Services.AddHostedService<WebhookDispatcher>();
 builder.Services.AddHostedService<ModUpdateChecker>();
 builder.Services.AddHostedService<ManagerUpdateChecker>();
@@ -191,6 +193,7 @@ auth.MapPost("/logout", async (HttpContext context) => { await context.SignOutAs
 var api = app.MapGroup("/api/v1").RequireAuthorization();
 api.MapModFiles();
 api.MapGet("/status", (ServerState state) => Results.Ok(state.Snapshot()));
+api.MapGet("/monitor", (MonitorService monitor) => Results.Ok(monitor.Snapshot()));
 api.MapGet("/players", (ServerState state) => Results.Ok(state.Players));
 api.MapPost("/notifications", async (NotificationRequest request, AgentGateway agent, AuditService audit) =>
 {

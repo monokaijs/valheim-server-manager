@@ -2,7 +2,7 @@ import React, { FormEvent, useCallback, useEffect, useRef, useState } from "reac
 import { createRoot } from "react-dom/client"
 import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr"
 import {
-  Activity, Backpack, Ban, Bell, Boxes, ChevronRight, CircleGauge, Clock3, Command, Copy, Download,
+  Activity, Backpack, Ban, Bell, Boxes, ChevronRight, CircleGauge, Command, Copy, Download,
   FileUp, HeartPulse, HelpCircle, LogOut, MoreHorizontal, PackageCheck, PlugZap, Plus,
   RadioTower, RefreshCw, ScrollText, Search, Server, Settings, ShieldCheck,
   Check, KeyRound, Shield, Sparkles, SquareTerminal, Trash2, UserPlus, UserRoundSearch, Users, Webhook, Wifi, WifiOff, X,
@@ -10,6 +10,7 @@ import {
 import { toast, Toaster } from "sonner"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -34,7 +35,8 @@ import { ClientNoticePreview } from "@/components/client-notice-preview"
 import { cn } from "@/lib/utils"
 import { ensureCsrf, post, remove, request } from "./api"
 import { ModFiles, ModFileManagerPage } from "@/components/mod-file-manager"
-import { LiveInspection } from "@/components/live-inspection"
+import { LiveInspection, type PlayerDetails } from "@/components/live-inspection"
+import { MonitorDashboard } from "@/components/monitor-dashboard"
 import "./styles.css"
 
 type AuthState = { authenticated: boolean; userName?: string; steamId?: string }
@@ -47,16 +49,6 @@ type ModConfigFile = { file: string; pluginGuid: string; pluginName: string; rev
 type Hook = { id: string; name: string; url: string; kind: string; secret: string; eventTypes: string[]; template: string; enabled: boolean; allowPrivateNetwork: boolean; consecutiveFailures: number }
 type Delivery = { id: string; eventType: string; status: string; attempts: number; createdAt: string; responseStatus?: number; lastError: string }
 type Audit = { id: number; occurredAt: string; actor: string; action: string; target: string; result: string; correlationId: string; detail: string }
-type InventoryItem = { prefab: string; name: string; description: string; type: string; stack: number; maxStack: number; quality: number; maxQuality: number; durability: number; maxDurability: number; weight: number; equipped: boolean; x: number; y: number; variant: number; crafterName: string; crafterId: string; teleportable: boolean; iconKey: string }
-type CharacterSnapshot = {
-  ok: boolean
-  status: string
-  player: string
-  capturedAt: string
-  character: { id: string; name: string; biome: string; health: number; maxHealth: number; stamina: number; maxStamina: number; eitr: number; maxEitr: number; armor: number; inventoryWidth: number; inventoryHeight: number; weight: number; skills: { name: string; level: number }[] }
-  items: InventoryItem[]
-  icons: Record<string, string>
-}
 type ServerCharacter = { platformId: string; characterName: string; fileName: string; size: number; modifiedAt: string; sha256: string }
 type CharacterStore = { installed: boolean; importAvailable: boolean; serverStatus: string; characters: ServerCharacter[] }
 type ServerSettingsData = {
@@ -72,13 +64,13 @@ type CreatedApiToken = ApiToken & { token: string }
 type JoinRequest = { id: string; platformId: string; playerName: string; status: "pending" | "approved" | "denied"; requestedAt: string; lastAttemptAt: string; attemptCount: number; resolvedAt?: string; resolvedBy?: string }
 type AccessLists = { whitelistEnabled: boolean; permitted: string[]; banned: string[]; admins: string[] }
 type KnownPlayer = { platformId: string; name: string; lastSeenAt: string }
-type SteamProfile = { steamId: string; name: string; avatarUrl: string; profileUrl: string }
+type SteamProfile = { steamId: string; name: string; avatarUrl: string; profileUrl: string; personaState?: number | null; accountCreatedAt?: string | null }
 type ServerMessages = { welcome: string; kick: string; ban: string; restart: string; whitelistRejected: string; companionRequired: string }
 type ManagerUpdate = { currentVersion: string; latestVersion?: string; updateAvailable: boolean; automaticUpdates: boolean; hostUpdaterAvailable: boolean; state: string; targetVersion?: string; detail: string; lastCheckedAt?: string; releaseUrl?: string }
 type PageId = "files" | "overview" | "mods" | "players" | "webhooks" | "console" | "audit" | "settings"
 
 const navigation: { id: PageId; label: string; icon: React.ElementType; hint: string }[] = [
-  { id: "overview", label: "Overview", icon: CircleGauge, hint: "Health & runtime" },
+  { id: "overview", label: "Monitor", icon: CircleGauge, hint: "Live charts and events" },
   { id: "files", label: "Files", icon: ScrollText, hint: "Configuration workspace" },
   { id: "mods", label: "Mods", icon: Boxes, hint: "Packages & updates" },
   { id: "players", label: "Players", icon: Users, hint: "Roster, requests, characters & access" },
@@ -90,7 +82,7 @@ const navigation: { id: PageId; label: string; icon: React.ElementType; hint: st
 
 const pageCopy: Record<PageId, { eyebrow: string; title: string; description: string }> = {
   files: { eyebrow: "Configuration workspace", title: "Files", description: "Safe, package-scoped configuration files." },
-  overview: { eyebrow: "", title: "Overview", description: "" },
+  overview: { eyebrow: "", title: "Monitor", description: "" },
   mods: { eyebrow: "Package control", title: "Mods", description: "Pinned packages with dependency-aware installs and safe rollback." },
   players: { eyebrow: "", title: "Players", description: "Roster, requests, characters and access." },
   webhooks: { eyebrow: "Automations", title: "Webhooks", description: "Signed, filtered event delivery with retries and history." },
@@ -125,7 +117,7 @@ function PageHeader({ page, actions }: { page: PageId; actions?: React.ReactNode
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-3">
       <div className="max-w-2xl">
         <h1 className="font-heading text-2xl font-semibold tracking-tight text-foreground">{copy.title}</h1>
-        {page !== "overview" && page !== "players" && <p className="mt-0.5 text-sm text-muted-foreground">{copy.description}</p>}
+        {page !== "overview" && <p className="mt-0.5 text-sm text-muted-foreground">{copy.description}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </header>
@@ -170,38 +162,6 @@ function Auth() {
   )
 }
 
-function Overview({ status, refresh }: { status: Status; refresh: () => void }) {
-  const action = async (name: "start" | "stop" | "restart") => {
-    const promise = post(`/api/v1/server/${name}`).then(() => window.setTimeout(refresh, 500))
-    toast.promise(promise, { loading: `${name[0].toUpperCase() + name.slice(1)}ing server…`, success: `Server ${name} requested`, error: (e) => (e as Error).message })
-  }
-  const stats = [
-    { label: "Server", value: status.status, icon: Server, warn: status.status !== "running" },
-    { label: "Players online", value: String(status.players), icon: Users, warn: false },
-    { label: "Uptime", value: formatDuration(status.uptimeSeconds), icon: Clock3, warn: false },
-    { label: "Changes", value: status.restartRequired ? "Restart needed" : "None", icon: PackageCheck, warn: status.restartRequired },
-  ]
-  return <div className="space-y-4">
-    <PageHeader page="overview" actions={<><Button variant="outline" size="sm" disabled={status.status !== "running"} onClick={() => action("restart")}><RefreshCw /> Restart</Button><Button size="sm" onClick={() => action(status.status === "running" ? "stop" : "start")}>{status.status === "running" ? "Stop server" : "Start server"}</Button></>} />
-    <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">{stats.map(({ label, value, icon: Icon, warn }) => <div key={label} className="rounded-xl border bg-card/70 p-3 sm:p-4"><div className="flex items-center gap-2 text-xs text-muted-foreground"><Icon className={cn("size-4", warn ? "text-amber-300" : "text-primary")} />{label}</div><p className="mt-2 text-xl font-semibold capitalize tabular-nums sm:text-2xl">{value}</p></div>)}</div>
-    <div className="flex flex-wrap gap-x-5 gap-y-1 rounded-xl border bg-card/50 px-3 py-2 text-xs text-muted-foreground sm:px-4">
-      <span><span className="text-foreground">Agent:</span> {status.agentConnected ? "Connected" : "Disconnected"}{status.agentVersion && ` · ${status.agentVersion}`}</span>
-      <span><span className="text-foreground">Game:</span> {status.gameVersion || "—"}</span>
-      {status.startedAt && <span><span className="text-foreground">Started:</span> {new Date(status.startedAt).toLocaleString()}</span>}
-    </div>
-  </div>
-}
-
-type InspectorState = { player: Player; snapshot: CharacterSnapshot | null; loading: boolean; error: string } | null
-
-function CharacterDialog({ state, onClose }: { state: InspectorState; onClose: () => void }) {
-  return <LiveInspection player={state?.player || null} onClose={onClose} />
-}
-
-function loadCharacter(player: Player, setState: (state: InspectorState) => void) {
-  setState({ player, snapshot: null, loading: false, error: "" })
-}
-
 function steamId(platformId: string) {
   const value = platformId.startsWith("Steam_") ? platformId.slice(6) : platformId
   return /^\d{17}$/.test(value) ? value : null
@@ -225,16 +185,17 @@ function useSteamProfiles(ids: string[]) {
   return profiles
 }
 
-function PlayerIdentity({ id, fallback, profiles, detail }: { id: string; fallback?: string; profiles: Record<string, SteamProfile>; detail?: string }) {
+function PlayerIdentity({ id, fallback, profiles, detail, onOpen }: { id: string; fallback?: string; profiles: Record<string, SteamProfile>; detail?: string; onOpen?: () => void }) {
   const profile = profiles[steamId(id) || ""]
   const name = profile?.name || fallback || (steamId(id) ? `Steam player · ${id.slice(-4)}` : id)
-  return <div className="flex min-w-0 items-center gap-2.5">
-    {profile?.avatarUrl ? <img src={profile.avatarUrl} alt="" className="size-9 shrink-0 rounded-lg bg-muted object-cover" /> : <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-xs font-semibold">{name.slice(0, 2).toUpperCase()}</div>}
+  const content = <>
+    <Avatar className="size-9 rounded-lg">{profile?.avatarUrl && <AvatarImage src={profile.avatarUrl} alt="" className="rounded-lg" />}<AvatarFallback className="rounded-lg text-xs font-semibold">{name.slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
     <div className="min-w-0">
-      {profile ? <a className="block truncate text-sm font-medium hover:text-primary hover:underline" href={profile.profileUrl} target="_blank" rel="noreferrer" title={`Open ${name} on Steam`}>{name}</a> : steamId(id) ? <a className="block truncate text-sm font-medium hover:text-primary hover:underline" href={`https://steamcommunity.com/profiles/${steamId(id)}`} target="_blank" rel="noreferrer" title="Open Steam profile">{name}</a> : <p className="truncate text-sm font-medium">{name}</p>}
+      <p className="truncate text-sm font-medium">{name}</p>
       {detail && <p className="truncate text-xs text-muted-foreground">{detail}</p>}
     </div>
-  </div>
+  </>
+  return onOpen ? <button type="button" onClick={onOpen} aria-label={`View ${name} details`} className="flex w-full min-w-0 items-center gap-2.5 rounded-md text-left outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-primary">{content}</button> : <div className="flex min-w-0 items-center gap-2.5">{content}</div>
 }
 
 function PlayersPage() {
@@ -245,7 +206,7 @@ function PlayersPage() {
   const { data: access, error: accessError, load: loadAccess } = useLoad<AccessLists>("/api/v1/access")
   const [query, setQuery] = useState("")
   const [filter, setFilter] = useState<"all" | "online" | "offline">("all")
-  const [inspector, setInspector] = useState<InspectorState>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [moderation, setModeration] = useState<{ player: Player; action: "kick" | "ban" } | null>(null)
   const [reason, setReason] = useState("")
   const [moderating, setModerating] = useState(false)
@@ -279,6 +240,18 @@ function PlayersPage() {
   access?.admins.forEach(id => { get(id).admin = true })
   players?.forEach(player => { get(player.platformId || `peer:${player.peerKey}`).player = player })
   const roster = [...entries.values()].sort((a, b) => Number(!!b.player) - Number(!!a.player) || (b.known?.lastSeenAt || "").localeCompare(a.known?.lastSeenAt || "") || a.id.localeCompare(b.id))
+  const openPlayer = (id: string) => setSelectedId(canonical(id))
+  const selected = selectedId ? entries.get(selectedId) : undefined
+  const selectedProfile = selected ? profiles[steamId(selected.id) || ""] : undefined
+  const selectedDetails: PlayerDetails | null = selected ? {
+    id: selected.id,
+    displayName: selectedProfile?.name || selected.known?.name || selected.player?.name || selected.request?.playerName || selected.characters[0]?.characterName || selected.id,
+    profile: selectedProfile,
+    player: selected.player,
+    lastSeenAt: selected.known?.lastSeenAt,
+    characterNames: selected.characters.map(character => character.characterName),
+    permitted: selected.permitted, banned: selected.banned, admin: selected.admin, whitelistEnabled: access?.whitelistEnabled || false, requestStatus: selected.request?.status,
+  } : null
   const visible = roster.filter(item => {
     if (filter === "online" && !item.player || filter === "offline" && item.player) return false
     const profile = profiles[steamId(item.id) || ""]
@@ -324,7 +297,7 @@ function PlayersPage() {
       <TabsContent value="roster" className="space-y-3">
         <ErrorAlert text={playersError || knownError} />
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-muted-foreground">{players?.length || 0} online · {roster.length} total</p>
+          <p className="text-xs text-muted-foreground">{players?.length || 0} online · {roster.length} total <span className="hidden sm:inline">· Select a player for details and inventory</span></p>
           <div className="flex gap-2"><Input aria-label="Search players" className="min-w-0 sm:w-56" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search players…" /><Select value={filter} onValueChange={value => setFilter(value as typeof filter)}><SelectTrigger aria-label="Filter players" className="w-28 shrink-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All</SelectItem><SelectItem value="online">Online</SelectItem><SelectItem value="offline">Offline</SelectItem></SelectContent></Select></div>
         </div>
         <div className="overflow-hidden rounded-xl border bg-card/50">
@@ -334,25 +307,25 @@ function PlayersPage() {
             const fallback = item.known?.name || item.request?.playerName || player?.name || names[0]
             const detail = [player?.name && profiles[steamId(item.id) || ""] ? player.name : null, names.length ? `${names.length} character${names.length === 1 ? "" : "s"}: ${names.join(", ")}` : null, !player && item.known?.lastSeenAt ? `Last seen ${new Date(item.known.lastSeenAt).toLocaleDateString()}` : null].filter(Boolean).join(" · ")
             return <div key={item.id} className="flex flex-wrap items-center gap-2 border-b px-3 py-3 last:border-0 sm:px-4">
-              <div className="min-w-0 flex-1 basis-44"><PlayerIdentity id={item.id} fallback={fallback} profiles={profiles} detail={detail} /></div>
+              <div className="min-w-0 flex-1 basis-44"><PlayerIdentity id={item.id} fallback={fallback} profiles={profiles} detail={detail} onOpen={() => openPlayer(item.id)} /></div>
               <div className="flex flex-wrap items-center gap-1.5"><Badge variant={player ? "secondary" : "outline"}>{player ? "Online" : "Offline"}</Badge>{item.request?.status === "pending" && <Badge variant="outline">Request pending</Badge>}{item.banned && <Badge variant="destructive">Banned</Badge>}{item.admin && <Badge variant="outline">Admin</Badge>}{item.permitted && <Badge variant="outline">Allowed</Badge>}</div>
-              {player && <div className="ml-auto flex items-center gap-1"><Button size="sm" variant="outline" disabled={!player.companion || !player.inventoryAllowed} onClick={() => loadCharacter(player, setInspector)}><UserRoundSearch /> <span className="hidden sm:inline">Inspect</span></Button><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${fallback || item.id}`}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => openNotification(player.peerKey)}><Bell /> Notify</DropdownMenuItem><DropdownMenuItem onClick={() => setModeration({ player, action: "kick" })}><LogOut /> Kick</DropdownMenuItem><DropdownMenuItem variant="destructive" onClick={() => setModeration({ player, action: "ban" })}><Ban /> Ban</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>}
+              <Button size="sm" variant="ghost" className="ml-auto" onClick={() => openPlayer(item.id)}>Details <ChevronRight /></Button>
             </div>
           })}
           {visible.length === 0 && <EmptyState icon={Users} title={roster.length ? "No matching players" : "No players yet"} detail={roster.length ? "Try another name or status." : "Players appear after they join, request access, or receive a server-owned character."} />}
         </div>
       </TabsContent>
-      <TabsContent value="requests"><JoinRequestsPage data={requests} error={requestsError} load={loadRequests} access={access} profiles={profiles} onChanged={refresh} /></TabsContent>
-      <TabsContent value="characters"><CharactersPage store={store} error={storeError} loadStore={loadStore} profiles={profiles} /></TabsContent>
-      <TabsContent value="access"><AccessPage data={access} error={accessError} load={loadAccess} profiles={profiles} onChanged={refresh} /></TabsContent>
+      <TabsContent value="requests"><JoinRequestsPage data={requests} error={requestsError} load={loadRequests} access={access} profiles={profiles} onChanged={refresh} onOpenPlayer={openPlayer} /></TabsContent>
+      <TabsContent value="characters"><CharactersPage store={store} error={storeError} loadStore={loadStore} profiles={profiles} onOpenPlayer={openPlayer} /></TabsContent>
+      <TabsContent value="access"><AccessPage data={access} error={accessError} load={loadAccess} profiles={profiles} onChanged={refresh} onOpenPlayer={openPlayer} /></TabsContent>
     </Tabs>
-    <CharacterDialog state={inspector} onClose={() => setInspector(null)} />
+    <LiveInspection details={selectedDetails} onClose={() => setSelectedId(null)} onNotify={peerKey => { setSelectedId(null); openNotification(peerKey) }} onModerate={(player, action) => { setSelectedId(null); setModeration({ player, action }) }} />
     <Dialog open={notificationOpen} onOpenChange={open => { setNotificationOpen(open); if (!open) setNotificationMessage("") }}><DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle>In-game notification</DialogTitle><DialogDescription>Show a message in Valheim's notification HUD. Only online players can receive it.</DialogDescription></DialogHeader><form onSubmit={sendNotification} className="space-y-4"><div className="space-y-2"><Label htmlFor="notification-target">Recipient</Label><Select value={notificationTarget} onValueChange={setNotificationTarget}><SelectTrigger id="notification-target" className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All online players ({players?.length || 0})</SelectItem>{players?.map(player => <SelectItem key={player.peerKey} value={player.peerKey}>{player.name}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label htmlFor="notification-message">Message</Label><Textarea id="notification-message" value={notificationMessage} onChange={event => setNotificationMessage(event.target.value)} maxLength={300} rows={4} required placeholder="Write the notification players will see…" /><p className="text-right text-xs text-muted-foreground">{notificationMessage.length}/300</p></div><div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setNotificationOpen(false)}>Cancel</Button><Button type="submit" disabled={notifying || !notificationMessage.trim() || (notificationTarget === "all" ? !players?.length : !players?.some(player => player.peerKey === notificationTarget))}>{notifying ? "Sending…" : "Send notification"}</Button></div></form></DialogContent></Dialog>
     <Dialog open={moderation !== null} onOpenChange={open => { if (!open) { setModeration(null); setReason("") } }}><DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle className="capitalize">{moderation?.action} {moderation?.player.name}</DialogTitle><DialogDescription>This action is recorded in the audit log.</DialogDescription></DialogHeader><div className="space-y-2"><Label htmlFor="moderation-reason">Reason</Label><Textarea id="moderation-reason" value={reason} onChange={event => setReason(event.target.value)} maxLength={300} placeholder="No reason provided." /></div><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setModeration(null)}>Cancel</Button><Button variant={moderation?.action === "ban" ? "destructive" : "default"} disabled={moderating} onClick={moderate}>{moderating ? "Sending…" : moderation?.action === "ban" ? "Ban player" : "Kick player"}</Button></div></DialogContent></Dialog>
   </div>
 }
 
-function CharactersPage({ store, error, loadStore, profiles }: { store: CharacterStore | null; error: string; loadStore: () => Promise<void>; profiles: Record<string, SteamProfile> }) {
+function CharactersPage({ store, error, loadStore, profiles, onOpenPlayer }: { store: CharacterStore | null; error: string; loadStore: () => Promise<void>; profiles: Record<string, SteamProfile>; onOpenPlayer: (id: string) => void }) {
   const [ownerId, setOwnerId] = useState("")
   const [profile, setProfile] = useState<File | null>(null)
   const [overwrite, setOverwrite] = useState(false)
@@ -367,7 +340,7 @@ function CharactersPage({ store, error, loadStore, profiles }: { store: Characte
   }
   const stopForImport = async () => { try { await post("/api/v1/server/stop"); toast.success("Server stopped; character import is now available"); await loadStore() } catch (cause) { toast.error((cause as Error).message) } }
   return <div className="space-y-3"><ErrorAlert text={error} />
-    <Card className="gap-3"><CardHeader><CardTitle>Server-owned profiles</CardTitle><CardAction><Badge variant="outline">{store?.characters.length || 0}</Badge></CardAction></CardHeader><CardContent className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{store?.characters.map(character => <div key={character.fileName} className="flex min-w-0 items-center gap-3 rounded-lg border bg-muted/20 p-3"><div className="min-w-0 flex-1"><PlayerIdentity id={character.platformId} fallback={character.characterName} profiles={profiles} detail={`${character.characterName} · ${(character.size / 1024).toFixed(1)} KiB`} /></div><time className="hidden text-[10px] text-muted-foreground sm:block">{new Date(character.modifiedAt).toLocaleDateString()}</time></div>)}{store?.characters.length === 0 && <div className="sm:col-span-2 xl:col-span-3"><EmptyState icon={UserRoundSearch} title="No server profiles" detail="Import a native .fch save to add a server-owned character." /></div>}</CardContent></Card>
+    <Card className="gap-3"><CardHeader><CardTitle>Server-owned profiles</CardTitle><CardAction><Badge variant="outline">{store?.characters.length || 0}</Badge></CardAction></CardHeader><CardContent className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{store?.characters.map(character => <div key={character.fileName} className="flex min-w-0 items-center gap-3 rounded-lg border bg-muted/20 p-3"><div className="min-w-0 flex-1"><PlayerIdentity id={character.platformId} fallback={character.characterName} profiles={profiles} detail={`${character.characterName} · ${(character.size / 1024).toFixed(1)} KiB`} onOpen={() => onOpenPlayer(character.platformId)} /></div><time className="hidden text-[10px] text-muted-foreground sm:block">{new Date(character.modifiedAt).toLocaleDateString()}</time></div>)}{store?.characters.length === 0 && <div className="sm:col-span-2 xl:col-span-3"><EmptyState icon={UserRoundSearch} title="No server profiles" detail="Import a native .fch save to add a server-owned character." /></div>}</CardContent></Card>
     <details className="group rounded-xl border bg-card/50"><summary className="flex cursor-pointer list-none items-center gap-2 p-4 text-sm font-medium"><FileUp className="size-4 text-primary" /> Import existing character <ChevronRight className="ml-auto size-4 transition-transform group-open:rotate-90" /></summary><div className="space-y-3 border-t p-4"><p className="text-xs text-muted-foreground">Upload a native Valheim .fch save for its Steam owner. The full character is preserved.</p>
       {store && !store.installed ? <Alert variant="destructive"><Ban /><AlertTitle>Character agent unavailable</AlertTitle><AlertDescription>Reapply the protected Server Manager server agent before importing.</AlertDescription></Alert> :
       store && !store.importAvailable ? <Alert><Server /><AlertTitle>Stop the server first</AlertTitle><AlertDescription className="space-y-3"><span className="block">Imports are only allowed while Valheim is stopped.</span><Button type="button" size="sm" variant="outline" onClick={stopForImport}>Save & stop server</Button></AlertDescription></Alert> : null}
@@ -376,16 +349,16 @@ function CharactersPage({ store, error, loadStore, profiles }: { store: Characte
   </div>
 }
 
-function AccessListCard({ title, detail, kind, items, profiles, onMutate }: { title: string; detail: string; kind: string; items: string[]; profiles: Record<string, SteamProfile>; onMutate: (kind: string, action: "add" | "remove", id: string) => Promise<void> }) {
+function AccessListCard({ title, detail, kind, items, profiles, onMutate, onOpenPlayer }: { title: string; detail: string; kind: string; items: string[]; profiles: Record<string, SteamProfile>; onMutate: (kind: string, action: "add" | "remove", id: string) => Promise<void>; onOpenPlayer: (id: string) => void }) {
   const [value, setValue] = useState("")
   const add = () => { if (value) void onMutate(kind, "add", value).then(() => setValue("")).catch(() => {}) }
   return <Card className="gap-3"><CardHeader><CardTitle>{title} <span className="text-sm font-normal text-muted-foreground">{items.length}</span></CardTitle><CardDescription>{detail}</CardDescription></CardHeader><CardContent className="space-y-3">
-    <div className="max-h-80 divide-y overflow-y-auto rounded-lg border">{items.map(id => <div key={id} className="flex items-center gap-2 px-2.5 py-2"><div className="min-w-0 flex-1"><PlayerIdentity id={id} profiles={profiles} /></div><Button size="icon-sm" variant="ghost" aria-label={`Remove ${id}`} title={`Remove ${id}`} onClick={() => { void onMutate(kind, "remove", id).catch(() => {}) }}><X /></Button></div>)}{items.length === 0 && <p className="p-3 text-xs text-muted-foreground">No entries.</p>}</div>
+    <div className="max-h-80 divide-y overflow-y-auto rounded-lg border">{items.map(id => <div key={id} className="flex items-center gap-2 px-2.5 py-2"><div className="min-w-0 flex-1"><PlayerIdentity id={id} profiles={profiles} onOpen={() => onOpenPlayer(id)} /></div><Button size="icon-sm" variant="ghost" aria-label={`Remove ${id}`} title={`Remove ${id}`} onClick={() => { void onMutate(kind, "remove", id).catch(() => {}) }}><X /></Button></div>)}{items.length === 0 && <p className="p-3 text-xs text-muted-foreground">No entries.</p>}</div>
     <div className="flex gap-2"><Input aria-label={`Add to ${title}`} value={value} onChange={event => setValue(event.target.value)} placeholder="Steam ID or platform ID" onKeyDown={event => { if (event.key === "Enter") add() }} /><Button type="button" size="icon" aria-label={`Add to ${title}`} disabled={!value.trim()} onClick={add}><Plus /></Button></div>
   </CardContent></Card>
 }
 
-function AccessPage({ data, error, load, profiles, onChanged }: { data: AccessLists | null; error: string; load: () => Promise<void>; profiles: Record<string, SteamProfile>; onChanged: () => void }) {
+function AccessPage({ data, error, load, profiles, onChanged, onOpenPlayer }: { data: AccessLists | null; error: string; load: () => Promise<void>; profiles: Record<string, SteamProfile>; onChanged: () => void; onOpenPlayer: (id: string) => void }) {
   const mutate = async (kind: string, action: "add" | "remove", id: string) => {
     try {
       if (action === "add") await post(`/api/v1/access/${kind}/`, { platformId: id })
@@ -394,10 +367,10 @@ function AccessPage({ data, error, load, profiles, onChanged }: { data: AccessLi
       await load(); onChanged()
     } catch (cause) { toast.error((cause as Error).message); throw cause }
   }
-  return <div className="space-y-3"><Badge variant={data?.whitelistEnabled ? "secondary" : "destructive"}>{data?.whitelistEnabled ? "Whitelist active" : "Whitelist disabled"}</Badge><ErrorAlert text={error} />{data && !data.whitelistEnabled && <p className="rounded-lg border border-amber-400/30 px-3 py-2 text-xs text-amber-200">Add a permitted player to activate admission requests. Until then, anyone can connect.</p>}<div className="grid gap-3 xl:grid-cols-3">{data && <><AccessListCard title="Allowed" detail="Can join the realm" kind="permitted" items={data.permitted} profiles={profiles} onMutate={mutate} /><AccessListCard title="Banned" detail="Denied at connection" kind="banned" items={data.banned} profiles={profiles} onMutate={mutate} /><AccessListCard title="Administrators" detail="Game and dashboard access" kind="admin" items={data.admins} profiles={profiles} onMutate={mutate} /></>}</div></div>
+  return <div className="space-y-3"><Badge variant={data?.whitelistEnabled ? "secondary" : "destructive"}>{data?.whitelistEnabled ? "Whitelist active" : "Whitelist disabled"}</Badge><ErrorAlert text={error} />{data && !data.whitelistEnabled && <p className="rounded-lg border border-amber-400/30 px-3 py-2 text-xs text-amber-200">Add a permitted player to activate admission requests. Until then, anyone can connect.</p>}<div className="grid gap-3 xl:grid-cols-3">{data && <><AccessListCard title="Allowed" detail="Can join the realm" kind="permitted" items={data.permitted} profiles={profiles} onMutate={mutate} onOpenPlayer={onOpenPlayer} /><AccessListCard title="Banned" detail="Denied at connection" kind="banned" items={data.banned} profiles={profiles} onMutate={mutate} onOpenPlayer={onOpenPlayer} /><AccessListCard title="Administrators" detail="Game and dashboard access" kind="admin" items={data.admins} profiles={profiles} onMutate={mutate} onOpenPlayer={onOpenPlayer} /></>}</div></div>
 }
 
-function JoinRequestsPage({ data, error, load, access, profiles, onChanged }: { data: JoinRequest[] | null; error: string; load: () => Promise<void>; access: AccessLists | null; profiles: Record<string, SteamProfile>; onChanged: () => void }) {
+function JoinRequestsPage({ data, error, load, access, profiles, onChanged, onOpenPlayer }: { data: JoinRequest[] | null; error: string; load: () => Promise<void>; access: AccessLists | null; profiles: Record<string, SteamProfile>; onChanged: () => void; onOpenPlayer: (id: string) => void }) {
   const [busy, setBusy] = useState<string | null>(null)
   const resolve = async (item: JoinRequest, decision: "approve" | "deny") => {
     setBusy(item.id)
@@ -411,8 +384,8 @@ function JoinRequestsPage({ data, error, load, access, profiles, onChanged }: { 
   const history = data?.filter(item => item.status !== "pending").slice(0, 50) || []
   return <div className="space-y-3"><p className="text-sm text-muted-foreground">{pending.length} pending</p><ErrorAlert text={error} />
     {access && !access.whitelistEnabled && <p className="rounded-lg border border-amber-400/30 px-3 py-2 text-xs text-amber-200">Requests need an active whitelist. Add a player in Access first.</p>}
-    <div className="overflow-hidden rounded-xl border bg-card/50">{pending.map(item => <div key={item.id} className="flex flex-wrap items-center gap-3 border-b p-3 last:border-0 sm:px-4"><div className="min-w-0 flex-1 basis-44"><PlayerIdentity id={item.platformId} fallback={item.playerName || undefined} profiles={profiles} detail={`${item.attemptCount} attempt${item.attemptCount === 1 ? "" : "s"} · Last tried ${new Date(item.lastAttemptAt).toLocaleString()}`} /></div><div className="ml-auto flex gap-2"><Button size="sm" variant="outline" disabled={busy === item.id} onClick={() => resolve(item, "deny")}><X /> Deny</Button><Button size="sm" disabled={busy === item.id} onClick={() => resolve(item, "approve")}><Check /> Approve</Button></div></div>)}{pending.length === 0 && <EmptyState icon={UserPlus} title="No pending requests" detail="New requests will appear here when the whitelist rejects a player." />}</div>
-    {history.length > 0 && <details className="rounded-xl border bg-card/50"><summary className="cursor-pointer px-4 py-3 text-sm font-medium">Recent decisions <span className="text-muted-foreground">{history.length}</span></summary><div className="divide-y border-t">{history.map(item => <div key={item.id} className="flex items-center gap-3 px-4 py-2.5"><div className="min-w-0 flex-1"><PlayerIdentity id={item.platformId} fallback={item.playerName || undefined} profiles={profiles} detail={item.resolvedAt ? new Date(item.resolvedAt).toLocaleString() : undefined} /></div><Badge variant={item.status === "approved" ? "secondary" : "destructive"}>{item.status}</Badge></div>)}</div></details>}
+    <div className="overflow-hidden rounded-xl border bg-card/50">{pending.map(item => <div key={item.id} className="flex flex-wrap items-center gap-3 border-b p-3 last:border-0 sm:px-4"><div className="min-w-0 flex-1 basis-44"><PlayerIdentity id={item.platformId} fallback={item.playerName || undefined} profiles={profiles} detail={`${item.attemptCount} attempt${item.attemptCount === 1 ? "" : "s"} · Last tried ${new Date(item.lastAttemptAt).toLocaleString()}`} onOpen={() => onOpenPlayer(item.platformId)} /></div><div className="ml-auto flex gap-2"><Button size="sm" variant="outline" disabled={busy === item.id} onClick={() => resolve(item, "deny")}><X /> Deny</Button><Button size="sm" disabled={busy === item.id} onClick={() => resolve(item, "approve")}><Check /> Approve</Button></div></div>)}{pending.length === 0 && <EmptyState icon={UserPlus} title="No pending requests" detail="New requests will appear here when the whitelist rejects a player." />}</div>
+    {history.length > 0 && <details className="rounded-xl border bg-card/50"><summary className="cursor-pointer px-4 py-3 text-sm font-medium">Recent decisions <span className="text-muted-foreground">{history.length}</span></summary><div className="divide-y border-t">{history.map(item => <div key={item.id} className="flex items-center gap-3 px-4 py-2.5"><div className="min-w-0 flex-1"><PlayerIdentity id={item.platformId} fallback={item.playerName || undefined} profiles={profiles} detail={item.resolvedAt ? new Date(item.resolvedAt).toLocaleString() : undefined} onOpen={() => onOpenPlayer(item.platformId)} /></div><Badge variant={item.status === "approved" ? "secondary" : "destructive"}>{item.status}</Badge></div>)}</div></details>}
   </div>
 }
 
@@ -729,7 +702,7 @@ function Dashboard({ auth }: { auth: AuthState }) {
   useEffect(() => { refreshStatus(); const connection = new HubConnectionBuilder().withUrl("/hubs/live").withAutomaticReconnect().configureLogging(LogLevel.Warning).build(); connection.on("status", setStatus); connection.on("log", (log: Log) => setLiveLogs(items => [...items.slice(-999), log])); connection.start().catch(console.error); return () => { void connection.stop() } }, [refreshStatus])
   useEffect(() => { const check = () => request<ManagerUpdate>("/api/v1/manager-update").then(update => { if (loadedManagerVersion.current && loadedManagerVersion.current !== update.currentVersion) window.location.reload(); loadedManagerVersion.current = update.currentVersion }).catch(() => {}); void check(); const timer = window.setInterval(check, 30_000); return () => window.clearInterval(timer) }, [])
   const logout = async () => { await post("/api/v1/auth/logout"); window.location.assign("/") }
-  const content = page === "files" ? <ModFileManagerPage onChanged={refreshStatus} /> : page === "overview" ? <Overview status={status} refresh={refreshStatus} /> : page === "players" ? <PlayersPage /> : page === "mods" ? <ModsPage refreshStatus={refreshStatus} /> : page === "webhooks" ? <WebhooksPage /> : page === "console" ? <ConsolePage liveLogs={liveLogs} /> : page === "audit" ? <AuditPage /> : <SettingsPage />
+  const content = page === "files" ? <ModFileManagerPage onChanged={refreshStatus} /> : page === "overview" ? <MonitorDashboard status={status} refresh={refreshStatus} /> : page === "players" ? <PlayersPage /> : page === "mods" ? <ModsPage refreshStatus={refreshStatus} /> : page === "webhooks" ? <WebhooksPage /> : page === "console" ? <ConsolePage liveLogs={liveLogs} /> : page === "audit" ? <AuditPage /> : <SettingsPage />
   return <SidebarProvider style={{ "--sidebar-width": "calc(var(--spacing) * 72)", "--header-height": "calc(var(--spacing) * 12)" } as React.CSSProperties}>
     <AppSidebar variant="inset" items={navigation} activeId={page} onNavigate={id => setPage(id as PageId)} userName={adminProfile?.name || "Steam admin"} steamId={auth.steamId} avatarUrl={adminProfile?.avatarUrl} onlinePlayers={status.players} agentConnected={status.agentConnected} onLogout={logout} />
     <SidebarInset>
@@ -745,14 +718,6 @@ function App() {
   if (!auth) return <main className="grid min-h-svh place-items-center bg-background"><div className="flex items-center gap-3 text-sm text-muted-foreground"><RefreshCw className="size-4 animate-spin" /> Loading the hall…</div></main>
   if (!auth.authenticated) return <Auth />
   return <Dashboard auth={auth} />
-}
-
-function formatDuration(seconds: number) {
-  if (!seconds) return "—"
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor(seconds % 86400 / 3600)
-  const minutes = Math.floor(seconds % 3600 / 60)
-  return days ? `${days}d ${hours}h` : hours ? `${hours}h ${minutes}m` : `${minutes}m`
 }
 
 document.documentElement.classList.add("dark")

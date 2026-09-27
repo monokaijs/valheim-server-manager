@@ -5,7 +5,7 @@ A self-hosted Valheim control plane with a web dashboard, live server agent, ser
 ## Included
 
 - One-container Linux deployment that installs the dedicated server with SteamCMD and supervises it without access to the Docker socket.
-- React/shadcn dashboard based on the `dashboard-01` shell for status, online players, live character inspection, access lists, Thunderstore/manual mods, webhooks, safe console commands, and auditing.
+- React/shadcn dashboard with a live monitor for player count, process CPU and RAM, recent events, character inspection, access lists, Thunderstore/manual mods, webhooks, safe console commands, and auditing. Monitor charts retain one hour of five-second samples in manager memory.
 - BepInEx server agent built at startup against the exact installed Valheim assemblies.
 - Inventory inspection is a mandatory server admission rule. Server-owned characters remain independently optional; every player needs the Server Manager client runtime and inventory sharing enabled.
 - SQLite persistence, Steam OpenID authentication restricted to `adminlist.txt`, secure cookies, CSRF protection, login throttling, SignalR updates, signed webhook delivery, and automatic mod rollback.
@@ -97,7 +97,7 @@ In the inventory tab, an authenticated administrator can search the connected cl
 
 VSM implements its own server-character protocol in the protected server agent and client runtime; it does not depend on ServerCharacters or ServerSync. The server sends its authoritative native `.fch` before player spawn. The client runtime installs that profile into the active Valheim session and returns native checkpoints every 30 seconds, on Valheim profile saves, on server save requests, and during normal logout handling. Clients without a compatible Server Manager runtime are rejected when server characters are enabled.
 
-**Players** combines the roster, join requests, characters, and access lists. The roster retains names and last-seen dates after players disconnect and includes owners of server-owned characters. Set `VSM_STEAM_API_KEY` in `.env` to show Steam display names and avatars; the key stays on the server. Without a key, the dashboard uses known character names and links to Steam profiles. Steam's [GetPlayerSummaries API](https://partner.steamgames.com/doc/webapi/ISteamUser#GetPlayerSummaries) provides profile details.
+**Players** combines the roster, join requests, characters, and access lists. Select a player in any of these views to open a details dialog with Steam identity, server activity, access, and live inventory when sharing is enabled. The roster retains names and last-seen dates after players disconnect and includes owners of server-owned characters. Set `VSM_STEAM_API_KEY` in `.env` to show Steam display names and full-size avatars; the key stays on the server. Without a key, the dashboard uses known character names. Steam's [GetPlayerSummaries API](https://partner.steamgames.com/doc/webapi/ISteamUser#GetPlayerSummaries) provides profile details.
 
 Administrators can use **Notify players** on the Players page to show a message in Valheim's HUD to everyone online, or use **Notify** from an online player's actions menu to address only that player. The manager records the target, message, and number of routed recipients in the audit log.
 

@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace ValheimServerManager.Services;
 
-public sealed record SteamProfile(string SteamId, string Name, string AvatarUrl, string ProfileUrl);
+public sealed record SteamProfile(string SteamId, string Name, string AvatarUrl, string ProfileUrl, int? PersonaState, DateTimeOffset? AccountCreatedAt);
 
 public sealed partial class SteamProfileService(IConfiguration configuration, ILogger<SteamProfileService> logger) : IDisposable
 {
@@ -40,12 +40,16 @@ public sealed partial class SteamProfileService(IConfiguration configuration, IL
                     var id = item.GetProperty("steamid").GetString() ?? "";
                     if (!SteamIdPattern().IsMatch(id)) continue;
                     var name = item.GetProperty("personaname").GetString() ?? "";
-                    var avatar = item.TryGetProperty("avatarmedium", out var image) ? image.GetString() ?? "" : "";
+                    var avatar = item.TryGetProperty("avatarfull", out var image) ? image.GetString() ?? "" : "";
+                    if (string.IsNullOrEmpty(avatar) && item.TryGetProperty("avatarmedium", out image)) avatar = image.GetString() ?? "";
                     if (!Uri.TryCreate(avatar, UriKind.Absolute, out var avatarUri) || avatarUri.Scheme != "https" ||
                         !(avatarUri.Host.EndsWith(".steamstatic.com", StringComparison.OrdinalIgnoreCase) ||
                           avatarUri.Host.Equals("steamcdn-a.akamaihd.net", StringComparison.OrdinalIgnoreCase))) avatar = "";
                     // Construct the link from the validated ID; remote profileurl values are not trusted.
-                    found[id] = new SteamProfile(id, name, avatar, "https://steamcommunity.com/profiles/" + id);
+                    var personaState = item.TryGetProperty("personastate", out var state) && state.TryGetInt32(out var parsedState) ? parsedState : (int?)null;
+                    var createdAt = item.TryGetProperty("timecreated", out var created) && created.TryGetInt64(out var seconds) && seconds is > 0 and < 253402300799
+                        ? DateTimeOffset.FromUnixTimeSeconds(seconds) : (DateTimeOffset?)null;
+                    found[id] = new SteamProfile(id, name, avatar, "https://steamcommunity.com/profiles/" + id, personaState, createdAt);
                 }
                 foreach (var id in missing)
                     _cache[id] = (found.GetValueOrDefault(id), now.AddMinutes(found.ContainsKey(id) ? 30 : 5));

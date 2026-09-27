@@ -11,6 +11,25 @@ public sealed class ProcessSupervisor(ServerState state, EventBus events, Server
     private DateOnly? _lastLogPrune;
     public bool IsRunning => _process is { HasExited: false };
 
+    public bool TryGetProcessMetrics(out int pid, out TimeSpan cpuTime, out long workingSet)
+    {
+        pid = 0;
+        cpuTime = TimeSpan.Zero;
+        workingSet = 0;
+        try
+        {
+            var process = _process;
+            if (process is null || process.HasExited) return false;
+            process.Refresh();
+            pid = process.Id;
+            cpuTime = process.TotalProcessorTime;
+            workingSet = process.WorkingSet64;
+            return true;
+        }
+        catch (InvalidOperationException) { return false; }
+        catch (System.ComponentModel.Win32Exception) { return false; }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (config.GetValue("VSM_AUTOSTART", true)) await StartServer(stoppingToken);
