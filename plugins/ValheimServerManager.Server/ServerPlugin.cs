@@ -27,7 +27,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager";
     public const string PluginName = "Server Manager";
-    public const string PluginVersion = "2.5.2";
+    public const string PluginVersion = "2.6.2";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.server";
     private const string ClientManifestRpc = "ValheimServerManager_Manifest_v1";
     private readonly ConcurrentQueue<Action> _mainThread = new();
@@ -310,7 +310,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
                     var peerId = (long?)data["peerId"] ?? 0;
                     if (!_companions.TryGetValue(peerId, out var inventoryAllowed)) throw new InvalidOperationException("The player's Server Manager runtime is not connected.");
                     if (!inventoryAllowed) throw new InvalidOperationException("The player has not enabled inventory inspection.");
-                    if (name == "inventory.archive" && !_inventoryEditClients.Contains(peerId)) throw new InvalidOperationException("The player needs Server Manager client 2.5.2 for offline inventory snapshots.");
+                    if (name == "inventory.archive" && !_inventoryEditClients.Contains(peerId)) throw new InvalidOperationException("The player needs Server Manager client 2.6.2 for offline inventory snapshots.");
                     _inventoryRequests[requestId] = Tuple.Create(peerId, DateTime.UtcNow);
                     InvokePeer(ZNet.instance.GetPeers().FirstOrDefault(item => item.m_uid == peerId), name == "inventory.archive" ? "VSM_InventoryArchiveRequest" : "VSM_InventoryRequest", requestId);
                     return;
@@ -322,7 +322,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
                     if (targetPeer == null || !_companions.TryGetValue(targetPeerId, out var allowed) || !allowed)
                         throw new InvalidOperationException("The player must be online with the Server Manager client and inventory sharing enabled.");
                     if (name == "items.edit" && !_inventoryEditClients.Contains(targetPeerId))
-                        throw new InvalidOperationException("The player needs Server Manager client 2.5.2 for inventory editing.");
+                        throw new InvalidOperationException("The player needs Server Manager client 2.6.2 for inventory editing.");
                     if (name == "items.catalog")
                     {
                         _inventoryRequests[requestId] = Tuple.Create(targetPeerId, DateTime.UtcNow);

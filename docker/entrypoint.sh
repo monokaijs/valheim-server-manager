@@ -92,7 +92,7 @@ if [[ -f "$legacy_plugin_dir/ValheimServerManager.Server.dll" ||
   printf 'Quarantined legacy Server Manager bundle at %s\n' "$legacy_backup"
 fi
 
-vsm_version="2.5.2"
+vsm_version="2.6.2"
 mkdir -p /data/server/BepInEx/plugins/ValheimServerManager /data/manager/downloads
 dotnet build /app/plugins/ValheimServerManager.Server/ValheimServerManager.Server.csproj -c Release \
   -p:ValheimManaged=/data/server/valheim_server_Data/Managed -p:BepInExRoot=/data/server/BepInEx \
@@ -107,7 +107,7 @@ mkdir -p "$package/BepInEx/plugins/ValheimServerManager"
 cp /tmp/vsm-client/ValheimServerManager.Client.dll "$package/BepInEx/plugins/ValheimServerManager/"
 cp /tmp/vsm-client/Newtonsoft.Json.dll "$package/BepInEx/plugins/ValheimServerManager/"
 printf '%s\n' "{\"name\":\"Server_Manager\",\"version_number\":\"$vsm_version\",\"website_url\":\"https://github.com/monokaijs/valheim-server-manager\",\"description\":\"Client mod compatibility, inventory administration, and server-owned characters.\",\"dependencies\":[\"denikson-BepInExPack_Valheim-$bepinex_pack_version\"]}" >"$package/manifest.json"
-printf '%s\n' '# Valheim Server Manager client' '' 'The Docker deployment installs the server agent. Install this client package through your external mod manager. The client checks this profile against the server mod allowlist and disconnects with a notice if required packages are missing or unlisted packages are present; it never downloads or installs mods.' '' 'Optional Discord activity: with Discord desktop running, set ShowServerActivity = true under [Discord] in BepInEx/config/dev.creaton.valheim-server-manager.client.cfg and restart Valheim. The server owner configures the application ID, image, and text under Settings > Discord. Your activity can show the server, world, online player count, capacity, free slots, and current biome; it clears when you disconnect.' >"$package/README.md"
+printf '%s\n' '# Valheim Server Manager client' '' 'The Docker deployment installs the server agent. Install this client package through your external mod manager. The client checks this profile against the server mod allowlist and disconnects with a notice if required packages are missing or unlisted packages are present; it never downloads or installs mods.' '' 'Discord activity: when the server owner configures an application ID under Settings > Discord, connected clients automatically show that server's activity if Discord desktop is running with activity sharing enabled. The owner controls the image and text. Activity can show the server, world, online player count, capacity, free slots, and current biome; it clears when you disconnect or the server disables it.' >"$package/README.md"
 cp /app/icon.png "$package/icon.png"
 rm -f /data/manager/downloads/ValheimServerManagerClient-*.zip /data/manager/downloads/ValheimServerManagerServer-*.zip /data/manager/downloads/XomNghien-ServerModBootstrap-*.zip
 (cd "$package" && zip -qr "/data/manager/downloads/ValheimServerManager-$vsm_version.zip" .)

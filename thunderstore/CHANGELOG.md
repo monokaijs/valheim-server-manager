@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.6.0
 
 - Added optional Discord Rich Presence for players, showing the server, online count, and current biome.
 - Added dashboard controls for Discord application ID, HTTPS activity artwork, and customizable details and state templates.
