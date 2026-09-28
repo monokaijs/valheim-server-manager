@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.7.0
 
 - Added built-in proximity voice chat with push-to-talk, voice activation, open mic, spatial playback, microphone gain, client opt-out, and server range controls.
 
