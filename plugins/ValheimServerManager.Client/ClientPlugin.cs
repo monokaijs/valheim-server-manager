@@ -38,6 +38,17 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private int _discordMaxPlayers = 10;
     private float _nextDiscordRegionCheck;
     private ConfigEntry<bool> _enableServerCharacters;
+    private ConfigEntry<bool> _voiceEnabled;
+    private ConfigEntry<VoiceChatMode> _voiceMode;
+    private ConfigEntry<KeyCode> _voicePushToTalk;
+    private ConfigEntry<float> _voiceVolume;
+    private ConfigEntry<float> _voiceMicrophoneGain;
+    private ConfigEntry<float> _voiceActivationThreshold;
+    private VoiceChatClient _voiceChat;
+    private bool _serverVoiceEnabled;
+    private bool _serverVoicePolicyReceived;
+    private float _serverVoiceRange = 40f;
+    private bool? _voiceAdvertised;
     private ZRoutedRpc _registeredRouter;
     private readonly ClientHandshake _handshake = new();
     private readonly NoticeOverlay _notices = new();
@@ -74,6 +85,13 @@ public sealed class ClientPlugin : BaseUnityPlugin
         _allowInventory = Config.Bind("Privacy", "AllowInventoryInspection", true, "Allow authenticated server administrators to inspect and edit inventory. The manager stores a last known inventory snapshot for offline administration. Required to join Server Manager realms.");
         _allowTelemetry = Config.Bind("Privacy", "AllowDetailedTelemetry", false, "Share death and biome events with the connected server.");
         _enableServerCharacters = Config.Bind("ServerCharacters", "Enabled", true, "Allow this server to make its native character profile authoritative for this session.");
+        _voiceEnabled = Config.Bind("VoiceChat", "Enabled", true, "Receive and transmit proximity voice on Server Manager realms.");
+        _voiceMode = Config.Bind("VoiceChat", "Mode", VoiceChatMode.PushToTalk, "PushToTalk opens the microphone while the key is held. VoiceActivation and OpenMic keep it open during play.");
+        _voicePushToTalk = Config.Bind("VoiceChat", "PushToTalk", KeyCode.LeftAlt, "Hold this key to transmit voice. The microphone opens only while the key is held.");
+        _voiceVolume = Config.Bind("VoiceChat", "Volume", 1f, new ConfigDescription("Playback volume for other players.", new AcceptableValueRange<float>(0f, 2f)));
+        _voiceMicrophoneGain = Config.Bind("VoiceChat", "MicrophoneGain", 1f, new ConfigDescription("Microphone gain before transmission.", new AcceptableValueRange<float>(0f, 3f)));
+        _voiceActivationThreshold = Config.Bind("VoiceChat", "ActivationThreshold", .015f, new ConfigDescription("RMS speech threshold for VoiceActivation mode.", new AcceptableValueRange<float>(.001f, .2f)));
+        _voiceChat = new VoiceChatClient();
         if (!NoticeInputGuard.Install(new Harmony(PluginGuid))) Logger.LogWarning("The game menu input guard is unavailable on this Valheim build.");
         Harmony.CreateAndPatchAll(typeof(DeathPatch), PluginGuid);
         Harmony.CreateAndPatchAll(typeof(KillPatch), PluginGuid);
@@ -145,6 +163,21 @@ public sealed class ClientPlugin : BaseUnityPlugin
             _nextModReceipt = Time.unscaledTime + 2f;
             InvokeServer("VSM_ModReceipt", _modCatalog.Revision);
         }
+        var voiceReady = _serverVoiceEnabled && _serverRpc != null && _handshake.Ready
+            && _modCatalog?.CanAcknowledge == true && Player.m_localPlayer != null;
+        var voiceActive = voiceReady && _voiceEnabled.Value;
+        if (_serverVoicePolicyReceived && _handshake.Ready && _voiceAdvertised != voiceActive)
+        {
+            _voiceAdvertised = voiceActive;
+            InvokeServer("VSM_VoiceEnabled", voiceActive);
+        }
+        _voiceChat?.Tick(voiceActive, _voiceMode.Value, _voicePushToTalk.Value,
+            _voiceMicrophoneGain.Value, _voiceActivationThreshold.Value, _voiceVolume.Value,
+            encoded =>
+            {
+                if (_serverRpc?.GetSocket() != null && _serverRpc.GetSocket().GetSendQueueSize() < 16 * 1024)
+                    InvokeServer("VSM_VoiceFrame", encoded);
+            });
         if (_pendingCharacterProfile != null && Game.instance != null) ApplyServerProfile();
         if (_pendingFirstProfile && Game.instance != null) PrepareFirstProfile();
         if (_bootstrapPending && Player.m_localPlayer != null && Game.instance != null) AdoptCurrentProfile();
@@ -287,6 +320,8 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private void OnGUI()
     {
         if (Player.m_localPlayer == null) _notices.Draw();
+        else if (_voiceChat?.Transmitting == true)
+            GUI.Box(new Rect(Screen.width - 185f, 20f, 165f, 28f), "Voice transmitting");
     }
 
     private void ApplyServerProfile()
@@ -383,6 +418,10 @@ public sealed class ClientPlugin : BaseUnityPlugin
         _discordPlayerCount = 0;
         _discordMaxPlayers = 10;
         _nextDiscordRegionCheck = 0f;
+        _voiceChat?.Reset();
+        _serverVoiceEnabled = _serverVoicePolicyReceived = false;
+        _serverVoiceRange = 40f;
+        _voiceAdvertised = null;
         _advertisedInventory = null;
         _inspectionPolicy = null;
         if (!string.IsNullOrEmpty(_temporaryProfileName))
@@ -419,6 +458,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private void OnDestroy()
     {
         _discordActivity?.Dispose();
+        _voiceChat?.Dispose();
         _notices.Dispose();
         ResetConnection();
         Harmony.UnpatchID(PluginGuid);
@@ -435,6 +475,19 @@ public sealed class ClientPlugin : BaseUnityPlugin
             Instance.AttachServerPeer(__0);
             __0.m_rpc.Register<bool>("VSM_InspectionPolicy", (rpc, required) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInspectionPolicy(required); });
             __0.m_rpc.Register<bool, int>("VSM_ServerPolicy", (rpc, required, timeout) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnServerPolicy(required, timeout); });
+            __0.m_rpc.Register<bool, float>("VSM_VoicePolicy", (rpc, enabled, range) =>
+            {
+                if (!ReferenceEquals(rpc, Instance?._serverRpc)) return;
+                Instance._serverVoiceEnabled = enabled;
+                Instance._serverVoiceRange = Mathf.Clamp(range, 5f, 100f);
+                Instance._serverVoicePolicyReceived = true;
+            });
+            __0.m_rpc.Register<string>("VSM_VoiceFrame", (rpc, encoded) =>
+            {
+                if (!ReferenceEquals(rpc, Instance?._serverRpc) || Instance._voiceEnabled?.Value != true
+                    || !Instance._serverVoiceEnabled || Player.m_localPlayer == null) return;
+                Instance._voiceChat?.Receive(encoded, Instance._serverVoiceRange, Instance._voiceVolume.Value);
+            });
             __0.m_rpc.Register<string>("VSM_InventoryRequest", (rpc, requestId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInventoryRequest(__0.m_uid, requestId); });
             __0.m_rpc.Register<string>("VSM_InventoryArchiveRequest", (rpc, requestId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInventoryArchiveRequest(__0.m_uid, requestId); });
             __0.m_rpc.Register<string>("VSM_ItemCatalogRequest", (rpc, requestId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnItemCatalogRequest(__0.m_uid, requestId); });

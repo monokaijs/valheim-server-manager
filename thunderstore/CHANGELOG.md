@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added built-in proximity voice chat with push-to-talk, voice activation, open mic, spatial playback, microphone gain, client opt-out, and server range controls.
+
 ## 2.6.0
 
 - Added optional Discord Rich Presence for players, showing the server, online count, and current biome.

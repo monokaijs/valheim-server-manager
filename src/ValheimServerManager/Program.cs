@@ -60,6 +60,7 @@ builder.Services.AddSingleton<ClientModManifestService>();
 builder.Services.AddSingleton<ServerCharacterService>();
 builder.Services.AddSingleton<InventoryArchiveService>();
 builder.Services.AddSingleton<ServerCharacterSettingsService>();
+builder.Services.AddSingleton<VoiceChatSettingsService>();
 builder.Services.AddSingleton<ServerSettingsService>();
 builder.Services.AddSingleton<ServerMessageService>();
 builder.Services.AddSingleton<DiscordActivitySettingsService>();
@@ -439,6 +440,16 @@ api.MapPost("/settings/server-access", async (ServerSettingsMutation request, Se
 }).RequireAntiforgery();
 
 api.MapGet("/settings/server-characters", async (ServerCharacterSettingsService settings, CancellationToken ct) => Results.Ok(await settings.Get(ct)));
+api.MapGet("/settings/voice-chat", async (VoiceChatSettingsService settings, CancellationToken ct) => Results.Ok(await settings.Get(ct)));
+api.MapPut("/settings/voice-chat", async (VoiceChatSettings request, VoiceChatSettingsService settings, AgentGateway agent, AuditService audit, CancellationToken ct) =>
+{
+    if (request.Range is < 5 or > 100)
+        return Results.BadRequest(new ProblemDetails { Title = "Voice range must be between 5 and 100 world units." });
+    var saved = await settings.Set(request, ct);
+    await agent.PublishVoiceChatSettings(ct);
+    await audit.Write("voice-chat.settings.update", "valheim", "success", $"enabled={saved.Enabled};range={saved.Range}");
+    return Results.Ok(saved);
+}).RequireAntiforgery();
 api.MapPut("/settings/server-characters", async (ServerCharacterSettings request, ServerCharacterSettingsService settings, AgentGateway agent, AuditService audit, CancellationToken ct) =>
 {
     var saved = await settings.Set(request, ct);

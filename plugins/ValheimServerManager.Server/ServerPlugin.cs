@@ -19,6 +19,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using ValheimServerManager.ServerSupport;
+using ValheimServerManager.VoiceSupport;
 
 namespace ValheimServerManager.Server;
 
@@ -56,6 +57,10 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private string _requiredModRevision;
     private DateTime _policyGraceUntil;
     private readonly Dictionary<ZNetPeer, string> _modReceipts = new();
+    private readonly HashSet<long> _voiceParticipants = new();
+    private readonly Dictionary<long, (DateTime UpdatedAt, double Credits)> _voiceRate = new();
+    private bool _voiceEnabled = true;
+    private float _voiceRange = 40f;
     private readonly HashSet<long> _modEnforcementHandled = new();
     private volatile string _pluginRegistryMessage;
     private string _serverName = "Valheim Server";
@@ -251,6 +256,11 @@ public sealed class ServerPlugin : BaseUnityPlugin
             if ((string)message["type"] == "serverCharacterSettings")
             {
                 _mainThread.Enqueue(() => ApplyServerCharacterSettings(message["payload"] as JObject));
+                continue;
+            }
+            if ((string)message["type"] == "voiceChatSettings")
+            {
+                _mainThread.Enqueue(() => ApplyVoiceChatSettings(message["payload"] as JObject));
                 continue;
             }
             if ((string)message["type"] != "command") continue;
@@ -451,6 +461,17 @@ public sealed class ServerPlugin : BaseUnityPlugin
         _policyGraceUntil = DateTime.UtcNow.AddSeconds(_clientGraceSeconds.Value);
         Config.Save();
         Logger.LogInfo($"Applied server-character policy: enabled={_serverCharactersEnabled.Value}, acceptFirstJoin={_acceptFirstJoinProfile.Value}, rejectPreviouslyUsed={_rejectPreviouslyUsedCharacters.Value}, backups={_characterBackups.Value}, clientGrace={_clientGraceSeconds.Value}s.");
+    }
+
+    private void ApplyVoiceChatSettings(JObject payload)
+    {
+        if (payload == null || payload["enabled"]?.Type != JTokenType.Boolean || payload["range"]?.Type != JTokenType.Integer) return;
+        var range = (int)payload["range"];
+        if (range is < 5 or > 100) return;
+        _voiceEnabled = (bool)payload["enabled"];
+        _voiceRange = range;
+        foreach (var peer in ZNet.instance?.GetPeers() ?? new List<ZNetPeer>())
+            InvokePeer(peer, "VSM_VoicePolicy", _voiceEnabled, _voiceRange);
     }
 
     private void ScheduleKick(ZNetPeer peer, string title, string message, string reason, string eventType)
@@ -748,6 +769,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         else _serverCharacterClients.Remove(sender);
         InvokePeer(peer, "VSM_ServerPolicy", _serverCharactersEnabled.Value, _clientGraceSeconds.Value);
         InvokePeer(peer, "VSM_InspectionPolicy", true);
+        InvokePeer(peer, "VSM_VoicePolicy", _voiceEnabled, _voiceRange);
         if (inventoryAllowed)
         {
             _inspectionEnforcementHandled.Remove(sender);
@@ -883,6 +905,49 @@ public sealed class ServerPlugin : BaseUnityPlugin
             var peerId = (PeerForRpc(znet, rpc) ?? peer).m_uid;
             if (peerId != 0) CharacterUpload(peerId, encoded);
         });
+        peer.m_rpc.Register<bool>("VSM_VoiceEnabled", (rpc, enabled) =>
+        {
+            if (!ReferenceEquals(rpc, peer.m_rpc) || peer.m_uid == 0) return;
+            if (enabled) _voiceParticipants.Add(peer.m_uid);
+            else _voiceParticipants.Remove(peer.m_uid);
+        });
+        peer.m_rpc.Register<string>("VSM_VoiceFrame", (rpc, encoded) =>
+        {
+            if (ReferenceEquals(rpc, peer.m_rpc)) OnVoiceFrame(peer, encoded);
+        });
+    }
+
+    private bool CanVoice(ZNetPeer peer) => _voiceEnabled && peer != null && peer.m_uid != 0 && peer.IsReady()
+        && _voiceParticipants.Contains(peer.m_uid) && _companions.TryGetValue(peer.m_uid, out var inventoryAllowed) && inventoryAllowed
+        && !_scheduledKicks.ContainsKey(peer.m_uid) && !string.IsNullOrEmpty(_requiredModRevision)
+        && _modReceipts.TryGetValue(peer, out var receipt) && receipt == _requiredModRevision;
+
+    private void OnVoiceFrame(ZNetPeer sender, string encoded)
+    {
+        if (!CanVoice(sender) || encoded == null || encoded.Length > 900 || ZDOMan.instance == null
+            || sender.m_characterID.IsNone()) return;
+        byte[] frame;
+        try { frame = Convert.FromBase64String(encoded); }
+        catch (FormatException) { return; }
+        if (frame.Length != VoiceCodec.FrameSamples) return;
+        var source = ZDOMan.instance.GetZDO(sender.m_characterID);
+        if (source == null) return;
+        var now = DateTime.UtcNow;
+        var credits = _voiceRate.TryGetValue(sender.m_uid, out var rate)
+            ? Math.Min(2d, rate.Credits + Math.Max(0d, (now - rate.UpdatedAt).TotalSeconds) * 25d) : 2d;
+        _voiceRate[sender.m_uid] = (now, credits < 1d ? credits : credits - 1d);
+        if (credits < 1d) return;
+        var position = source.GetPosition();
+        var packet = Convert.ToBase64String(VoiceCodec.Relay(sender.m_uid, position.x, position.y, position.z, frame));
+        var rangeSquared = _voiceRange * _voiceRange;
+        foreach (var recipient in ZNet.instance.GetPeers())
+        {
+            if (recipient == sender || !CanVoice(recipient) || recipient.m_characterID.IsNone()
+                || recipient.m_rpc?.GetSocket() == null || recipient.m_rpc.GetSocket().GetSendQueueSize() > 16 * 1024) continue;
+            var target = ZDOMan.instance.GetZDO(recipient.m_characterID);
+            if (target == null || (target.GetPosition() - position).sqrMagnitude > rangeSquared) continue;
+            InvokePeer(recipient, "VSM_VoiceFrame", packet);
+        }
     }
     private void ClientHelloForPeer(ZNet znet, ZNetPeer peer, ZRpc rpc, bool allowed, string version)
     {
@@ -913,6 +978,8 @@ public sealed class ServerPlugin : BaseUnityPlugin
         _modEnforcementHandled.Remove(peer.m_uid);
         var joined = _joined.Remove(peer.m_uid);
         _companions.Remove(peer.m_uid);
+        _voiceParticipants.Remove(peer.m_uid);
+        _voiceRate.Remove(peer.m_uid);
         _inspectionEnforcementHandled.Remove(peer.m_uid);
         _serverCharacterClients.Remove(peer.m_uid);
         _inventoryEditClients.Remove(peer.m_uid);
