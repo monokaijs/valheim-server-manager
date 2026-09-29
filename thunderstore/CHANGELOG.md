@@ -3,6 +3,7 @@
 ## 2.7.0
 
 - Added built-in proximity voice chat with push-to-talk, voice activation, open mic, spatial playback, microphone gain, client opt-out, and server range controls.
+- Added an in-game F8 voice settings panel for microphone selection and talk-key rebinding.
 
 ## 2.6.0
 

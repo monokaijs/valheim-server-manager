@@ -2,6 +2,7 @@ package main
 
 import (
  "encoding/base64"
+ "encoding/binary"
  "encoding/json"
  "errors"
  "fmt"
@@ -39,6 +40,8 @@ func run(input io.Reader) (response, error) {
  if err := json.NewDecoder(io.LimitReader(input, 3*1024*1024)).Decode(&req); err != nil { return response{}, err }
  raw, err := base64.StdEncoding.DecodeString(req.Profile)
  if err != nil || len(raw) > 2*1024*1024 { return response{}, errors.New("invalid character profile") }
+ if len(raw) >= 8 && binary.LittleEndian.Uint32(raw[4:8]) == 46 { return runV46(req, raw) }
+ if len(raw) >= 8 && binary.LittleEndian.Uint32(raw[4:8]) > 43 { return response{}, fmt.Errorf("unsupported character version %d (supported: 43 and 46)", binary.LittleEndian.Uint32(raw[4:8])) }
  character, err := fch.DecodeBytes(raw)
  if err != nil { return response{}, err }
  if err = character.ValidateEditable(); err != nil { return response{}, err }

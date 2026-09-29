@@ -14,6 +14,7 @@ export function OfflineInventory({ characters }: { characters: Character[] }) {
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [busy, setBusy] = useState(false)
+  const [loadRevision, setLoadRevision] = useState(0)
   const [selected, setSelected] = useState<Item | null>(null)
   const [prefab, setPrefab] = useState("")
   const [quantity, setQuantity] = useState(1)
@@ -29,7 +30,7 @@ export function OfflineInventory({ characters }: { characters: Character[] }) {
     setData(null); setSelected(null); setError(""); setNotice("")
     if (fileName) void request<Inventory>(url).then(value => { if (active) setData(value) }).catch((cause: Error) => { if (active) setError(cause.message) })
     return () => { active = false }
-  }, [fileName, url])
+  }, [fileName, url, loadRevision])
   const catalog = useMemo(() => (data?.catalog || []).filter(item => item.inventoryValid), [data?.catalog])
   const choose = (item: Item) => { setSelected(item); setStack(item.stack); setItemQuality(item.quality); setDurability(item.durability); setEquipped(item.equipped) }
   const edit = async (action: "give" | "replace" | "remove") => {
@@ -55,7 +56,7 @@ export function OfflineInventory({ characters }: { characters: Character[] }) {
     </div>
     {error && <p role="alert" className="mb-3 text-sm text-destructive">{error}</p>}
     {notice && <p role="status" className="mb-3 text-sm text-primary">{notice}</p>}
-    {!data ? <p className="text-sm text-muted-foreground">Reading saved character…</p> : <>
+    {!data ? error ? <Button variant="outline" size="sm" onClick={() => setLoadRevision(value => value + 1)}>Retry reading character</Button> : <p className="text-sm text-muted-foreground">Reading saved character…</p> : <>
       <div className="mb-5 rounded-xl border bg-card p-4"><h4 className="mb-3 text-sm font-semibold">Give item</h4><div className="flex flex-wrap items-end gap-2">
         <label className="min-w-48 flex-1 text-xs">Prefab<Input list="saved-character-items" value={prefab} onChange={event => setPrefab(event.target.value)} placeholder="Search or enter exact prefab" /></label>
         <datalist id="saved-character-items">{catalog.map(item => <option key={item.name} value={item.name} />)}</datalist>

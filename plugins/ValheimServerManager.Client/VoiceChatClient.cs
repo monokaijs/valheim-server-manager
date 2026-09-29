@@ -12,16 +12,25 @@ internal sealed class VoiceChatClient : IDisposable
     // Unity 6 also exposes a Span overload that cannot be resolved by this net48 plugin.
     private static readonly Func<AudioClip, float[], int, bool> ReadMicrophone = CreateReader();
     private AudioClip _microphoneClip;
+    private string _requestedDevice;
+    private string _activeDevice;
     private int _readPosition;
-    private bool _captureUnavailable;
+    private float _retryAt;
     private float _voiceGateUntil;
     private float _lastSentAt;
     private readonly Dictionary<long, Playback> _playbacks = new();
     internal bool Transmitting => _microphoneClip != null && Time.unscaledTime - _lastSentAt < .2f;
 
-    internal void Tick(bool active, VoiceChatMode mode, KeyCode pushToTalk, float microphoneGain,
+    internal void Tick(bool active, VoiceChatMode mode, KeyCode pushToTalk, string inputDevice, float microphoneGain,
         float activationThreshold, float volume, Action<string> send)
     {
+        inputDevice = string.IsNullOrWhiteSpace(inputDevice) ? null : inputDevice;
+        if (!string.Equals(_requestedDevice, inputDevice, StringComparison.Ordinal))
+        {
+            StopMicrophone();
+            _requestedDevice = inputDevice;
+            _retryAt = 0f;
+        }
         foreach (var playback in _playbacks.Values) playback.Volume = volume;
         var expired = new List<long>();
         foreach (var pair in _playbacks)
@@ -33,22 +42,25 @@ internal sealed class VoiceChatClient : IDisposable
             StopMicrophone();
             return;
         }
-        if (_captureUnavailable || ReadMicrophone == null) return;
+        if (ReadMicrophone == null || Time.unscaledTime < _retryAt) return;
         if (_microphoneClip == null)
         {
             try
             {
-                if (Microphone.devices == null || Microphone.devices.Length == 0) { _captureUnavailable = true; return; }
-                _microphoneClip = Microphone.Start(null, true, 1, VoiceCodec.SampleRate);
+                var devices = Microphone.devices;
+                if (devices == null || devices.Length == 0 || inputDevice != null
+                    && Array.IndexOf(devices, inputDevice) < 0) { _retryAt = Time.unscaledTime + 3f; return; }
+                _activeDevice = inputDevice;
+                _microphoneClip = Microphone.Start(_activeDevice, true, 1, VoiceCodec.SampleRate);
                 _readPosition = 0;
-                if (_microphoneClip == null) _captureUnavailable = true;
+                if (_microphoneClip == null) { _activeDevice = null; _retryAt = Time.unscaledTime + 3f; }
             }
-            catch (Exception) { _captureUnavailable = true; }
+            catch (Exception) { _activeDevice = null; _retryAt = Time.unscaledTime + 3f; }
             return;
         }
         try
         {
-            var current = Microphone.GetPosition(null);
+            var current = Microphone.GetPosition(_activeDevice);
             if (current < 0) return;
             var available = (current - _readPosition + VoiceCodec.SampleRate) % VoiceCodec.SampleRate;
             if (available > VoiceCodec.SampleRate / 2)
@@ -81,7 +93,7 @@ internal sealed class VoiceChatClient : IDisposable
         catch (Exception)
         {
             StopMicrophone();
-            _captureUnavailable = true;
+            _retryAt = Time.unscaledTime + 3f;
         }
     }
 
@@ -107,9 +119,10 @@ internal sealed class VoiceChatClient : IDisposable
     private void StopMicrophone()
     {
         if (_microphoneClip == null) return;
-        try { Microphone.End(null); } catch (Exception) { }
+        try { Microphone.End(_activeDevice); } catch (Exception) { }
         UnityEngine.Object.Destroy(_microphoneClip);
         _microphoneClip = null;
+        _activeDevice = null;
         _readPosition = 0;
         _voiceGateUntil = 0f;
     }
@@ -119,7 +132,7 @@ internal sealed class VoiceChatClient : IDisposable
         StopMicrophone();
         foreach (var playback in _playbacks.Values) playback.Dispose();
         _playbacks.Clear();
-        _captureUnavailable = false;
+        _retryAt = 0f;
         _lastSentAt = 0f;
     }
 

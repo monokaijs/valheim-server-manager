@@ -41,10 +41,12 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private ConfigEntry<bool> _voiceEnabled;
     private ConfigEntry<VoiceChatMode> _voiceMode;
     private ConfigEntry<KeyCode> _voicePushToTalk;
+    private ConfigEntry<string> _voiceInputDevice;
     private ConfigEntry<float> _voiceVolume;
     private ConfigEntry<float> _voiceMicrophoneGain;
     private ConfigEntry<float> _voiceActivationThreshold;
     private VoiceChatClient _voiceChat;
+    private VoiceSettingsPanel _voiceSettings;
     private bool _serverVoiceEnabled;
     private bool _serverVoicePolicyReceived;
     private float _serverVoiceRange = 40f;
@@ -88,10 +90,13 @@ public sealed class ClientPlugin : BaseUnityPlugin
         _voiceEnabled = Config.Bind("VoiceChat", "Enabled", true, "Receive and transmit proximity voice on Server Manager realms.");
         _voiceMode = Config.Bind("VoiceChat", "Mode", VoiceChatMode.PushToTalk, "PushToTalk opens the microphone while the key is held. VoiceActivation and OpenMic keep it open during play.");
         _voicePushToTalk = Config.Bind("VoiceChat", "PushToTalk", KeyCode.LeftAlt, "Hold this key to transmit voice. The microphone opens only while the key is held.");
+        _voiceInputDevice = Config.Bind("VoiceChat", "InputDevice", "", "Microphone device name. Empty uses the system default. Press F8 in game to choose a microphone.");
         _voiceVolume = Config.Bind("VoiceChat", "Volume", 1f, new ConfigDescription("Playback volume for other players.", new AcceptableValueRange<float>(0f, 2f)));
         _voiceMicrophoneGain = Config.Bind("VoiceChat", "MicrophoneGain", 1f, new ConfigDescription("Microphone gain before transmission.", new AcceptableValueRange<float>(0f, 3f)));
         _voiceActivationThreshold = Config.Bind("VoiceChat", "ActivationThreshold", .015f, new ConfigDescription("RMS speech threshold for VoiceActivation mode.", new AcceptableValueRange<float>(.001f, .2f)));
         _voiceChat = new VoiceChatClient();
+        _voiceSettings = new VoiceSettingsPanel(Config, _voiceEnabled, _voiceMode, _voicePushToTalk,
+            _voiceInputDevice, _voiceVolume, _voiceMicrophoneGain, _voiceActivationThreshold);
         if (!NoticeInputGuard.Install(new Harmony(PluginGuid))) Logger.LogWarning("The game menu input guard is unavailable on this Valheim build.");
         Harmony.CreateAndPatchAll(typeof(DeathPatch), PluginGuid);
         Harmony.CreateAndPatchAll(typeof(KillPatch), PluginGuid);
@@ -117,6 +122,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private void Update()
     {
         _notices.Tick(Player.m_localPlayer != null);
+        _voiceSettings?.Tick(Player.m_localPlayer != null);
         if (Player.m_localPlayer == null) _discordRegion = null;
         else if (_serverRpc != null && !string.IsNullOrEmpty(_discordApplicationId) && Time.unscaledTime >= _nextDiscordRegionCheck)
         {
@@ -171,7 +177,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
             _voiceAdvertised = voiceActive;
             InvokeServer("VSM_VoiceEnabled", voiceActive);
         }
-        _voiceChat?.Tick(voiceActive, _voiceMode.Value, _voicePushToTalk.Value,
+        _voiceChat?.Tick(voiceActive, _voiceMode.Value, _voicePushToTalk.Value, _voiceInputDevice.Value,
             _voiceMicrophoneGain.Value, _voiceActivationThreshold.Value, _voiceVolume.Value,
             encoded =>
             {
@@ -320,8 +326,12 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private void OnGUI()
     {
         if (Player.m_localPlayer == null) _notices.Draw();
-        else if (_voiceChat?.Transmitting == true)
-            GUI.Box(new Rect(Screen.width - 185f, 20f, 165f, 28f), "Voice transmitting");
+        else
+        {
+            if (_voiceChat?.Transmitting == true)
+                GUI.Box(new Rect(Screen.width - 185f, 20f, 165f, 28f), "Voice transmitting");
+            _voiceSettings?.Draw(_serverVoicePolicyReceived, _serverVoiceEnabled);
+        }
     }
 
     private void ApplyServerProfile()
@@ -458,6 +468,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private void OnDestroy()
     {
         _discordActivity?.Dispose();
+        _voiceSettings?.Close();
         _voiceChat?.Dispose();
         _notices.Dispose();
         ResetConnection();
