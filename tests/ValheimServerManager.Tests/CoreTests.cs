@@ -36,6 +36,16 @@ public sealed class CoreTests
         Assert.Throws<ArgumentException>(() => SafeConsoleService.Tokenize("broadcast \"oops"));
     }
 
+    [Theory]
+    [InlineData("restart", true)]
+    [InlineData("  ReStArT 30 maintenance", true)]
+    [InlineData("broadcast restart", false)]
+    [InlineData("status", false)]
+    public void ConsoleRestartPermission_UsesParsedCommand(string input, bool expected)
+    {
+        Assert.Equal(expected, SafeConsoleService.IsRestartCommand(input));
+    }
+
     [Fact]
     public void ServerMessages_RenderOnlySupportedPlaceholders()
     {

@@ -31,7 +31,9 @@ public sealed class LiveHubCancellationTests
                 NullLogger<AgentGateway>.Instance);
             var inspection = new InventoryInspectionService(gateway, new ServerState(null!));
             var access = new AccessListService(config, gateway);
-            var hub = new LiveHub(inspection, access, provider.GetRequiredService<AuditService>())
+            await using var roleScope = provider.CreateAsyncScope();
+            var roles = new ManagerRoleService(roleScope.ServiceProvider.GetRequiredService<ManagerDbContext>(), access);
+            var hub = new LiveHub(inspection, roles, provider.GetRequiredService<AuditService>())
             {
                 Context = new WatchContext(steamId)
             };

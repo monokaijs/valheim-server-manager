@@ -8,7 +8,7 @@ using ValheimServerManager.Services;
 namespace ValheimServerManager.Hubs;
 
 [Authorize]
-public sealed class LiveHub(InventoryInspectionService inspection, AccessListService access, AuditService audit) : Hub
+public sealed class LiveHub(InventoryInspectionService inspection, ManagerRoleService roles, AuditService audit) : Hub
 {
     public async IAsyncEnumerable<InspectionFrame> WatchPlayer(string peerId,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -16,7 +16,7 @@ public sealed class LiveHub(InventoryInspectionService inspection, AccessListSer
         if (!long.TryParse(peerId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var peer) || peer == 0)
             throw new HubException("Invalid player identity.");
         var steamId = Context.User?.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (steamId is null || !await access.IsSteamAdmin(steamId)) throw new HubException("Administrator access is required.");
+        if (steamId is null || await roles.GetRole(steamId) is null) throw new HubException("Manager access is required.");
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, Context.ConnectionAborted);
         var token = lifetime.Token;
         var actor = "Steam_" + steamId;
@@ -28,7 +28,7 @@ public sealed class LiveHub(InventoryInspectionService inspection, AccessListSer
             while (!token.IsCancellationRequested)
             {
                 // Do not let a long-lived socket bypass a revoked administrator membership.
-                if (!await access.IsSteamAdmin(steamId)) throw new HubException("Administrator access was revoked.");
+                if (await roles.GetRole(steamId) is null) throw new HubException("Manager access was revoked.");
                 InspectionFrame? frame = null;
                 try { frame = await inspection.Read(peer, token); }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { }

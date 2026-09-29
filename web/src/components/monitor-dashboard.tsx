@@ -94,7 +94,7 @@ function TrendChart({ title, detail, data, metric, empty }: {
   </Card>
 }
 
-export function MonitorDashboard({ status, refresh }: { status: MonitorStatus; refresh: () => void }) {
+export function MonitorDashboard({ status, refresh, isAdmin }: { status: MonitorStatus; refresh: () => void; isAdmin: boolean }) {
   const [monitor, setMonitor] = useState<Monitor | null>(null)
   const [error, setError] = useState("")
   const [range, setRange] = useState<Range>("1h")
@@ -118,8 +118,8 @@ export function MonitorDashboard({ status, refresh }: { status: MonitorStatus; r
       <div><p className="mb-1 text-[11px] font-semibold uppercase tracking-[.18em] text-primary">Server operations</p><h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Monitor</h1><p className="mt-1 text-sm text-muted-foreground">Live activity and resource usage for your Valheim server.</p></div>
       <div className="flex flex-wrap items-center gap-2">
         <span className={cn("mr-1 inline-flex items-center gap-2 text-xs font-medium capitalize", online ? "text-emerald-400" : "text-amber-400")}><span className={cn("size-2 rounded-full", online ? "bg-emerald-400" : "bg-amber-400")} />{status.status}</span>
-        <Button variant="outline" size="sm" disabled={!online} onClick={() => action("restart")}><RefreshCw /> Restart</Button>
-        <Button size="sm" onClick={() => action(online ? "stop" : "start")}>{online ? "Stop server" : "Start server"}</Button>
+        {isAdmin && <Button variant="outline" size="sm" disabled={!online} onClick={() => action("restart")}><RefreshCw /> Restart</Button>}
+        {isAdmin && <Button size="sm" onClick={() => action(online ? "stop" : "start")}>{online ? "Stop server" : "Start server"}</Button>}
       </div>
     </header>
 

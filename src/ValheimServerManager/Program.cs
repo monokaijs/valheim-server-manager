@@ -31,7 +31,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     options.Events.OnRedirectToLogin = context => { context.Response.StatusCode = 401; return Task.CompletedTask; };
     options.Events.OnRedirectToAccessDenied = context => { context.Response.StatusCode = 403; return Task.CompletedTask; };
 });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options => options.AddPolicy("Admin", policy => policy.RequireRole(ManagerRoleService.Admin)));
 builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataPath, "keys"))).SetApplicationName("ValheimServerManager");
 builder.Services.AddAntiforgery(options => { options.HeaderName = "X-CSRF-TOKEN"; options.Cookie.Name = "vsm.csrf"; options.Cookie.SameSite = SameSiteMode.Strict; });
 builder.Services.AddRateLimiter(options => options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
@@ -54,6 +54,7 @@ builder.Services.AddSingleton<EventBus>();
 builder.Services.AddSingleton<AgentGateway>();
 builder.Services.AddSingleton<AuditService>();
 builder.Services.AddSingleton<AccessListService>();
+builder.Services.AddScoped<ManagerRoleService>();
 builder.Services.AddSingleton<SafeConsoleService>();
 builder.Services.AddSingleton<ModService>();
 builder.Services.AddSingleton<ClientModManifestService>();
@@ -134,6 +135,11 @@ using (var scope = app.Services.CreateScope())
             "Error" TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS "IX_PendingInventoryEdits_PlatformId_Status_CreatedAt" ON "PendingInventoryEdits" ("PlatformId", "Status", "CreatedAt");
+        CREATE TABLE IF NOT EXISTS "ManagerUserRoles" (
+            "SteamId" TEXT NOT NULL CONSTRAINT "PK_ManagerUserRoles" PRIMARY KEY,
+            "Role" TEXT NOT NULL,
+            "UpdatedAt" TEXT NOT NULL
+        );
         """);
     await db.Database.ExecuteSqlRawAsync("UPDATE PendingInventoryEdits SET Status = 'unknown', Error = 'Delivery status unknown after manager restart' WHERE Status = 'sending'");
     scope.ServiceProvider.GetRequiredService<ServerState>().RestartRequired = await db.ManagerSettings.AnyAsync(x =>
@@ -185,10 +191,10 @@ app.MapGet("/healthz", (ServerState state) => Results.Ok(new { status = "ok", se
 app.MapHub<LiveHub>("/hubs/live").RequireAuthorization();
 
 var auth = app.MapGroup("/api/v1/auth");
-auth.MapGet("/state", (HttpContext context) => Results.Ok(new { authenticated = context.User.Identity?.IsAuthenticated == true, userName = context.User.Identity?.Name, steamId = context.User.FindFirstValue(ClaimTypes.NameIdentifier) }));
+auth.MapGet("/state", (HttpContext context) => Results.Ok(new { authenticated = context.User.Identity?.IsAuthenticated == true, userName = context.User.Identity?.Name, steamId = context.User.FindFirstValue(ClaimTypes.NameIdentifier), role = context.User.FindFirstValue(ClaimTypes.Role) }));
 auth.MapGet("/csrf", (IAntiforgery antiforgery, HttpContext context) => Results.Ok(new { token = antiforgery.GetAndStoreTokens(context).RequestToken }));
 auth.MapGet("/steam", (SteamAuthService steam, HttpContext context) => Results.Redirect(steam.CreateLoginUrl(context))).RequireRateLimiting("auth");
-auth.MapGet("/steam/callback", async (SteamAuthService steam, AccessListService access, HttpContext context, AuditService audit, CancellationToken ct) =>
+auth.MapGet("/steam/callback", async (SteamAuthService steam, ManagerRoleService roles, HttpContext context, AuditService audit, CancellationToken ct) =>
 {
     var steamId = await steam.ValidateCallback(context, ct);
     if (steamId is null)
@@ -196,14 +202,16 @@ auth.MapGet("/steam/callback", async (SteamAuthService steam, AccessListService 
         await audit.Write("auth.steam", "unknown", "failure", "Steam OpenID verification failed.");
         return Results.Redirect("/?authError=verification_failed");
     }
-    if (!await access.IsSteamAdmin(steamId))
+    var role = await roles.GetRole(steamId, ct);
+    if (role is null)
     {
-        await audit.Write("auth.steam", steamId, "failure", "Steam ID is not present in adminlist.txt.");
-        return Results.Redirect("/?authError=not_admin");
+        await audit.Write("auth.steam", steamId, "failure", "Steam ID has no manager role.");
+        return Results.Redirect("/?authError=no_role");
     }
     var identity = new ClaimsIdentity([
         new Claim(ClaimTypes.NameIdentifier, steamId),
-        new Claim(ClaimTypes.Name, "Steam_" + steamId)
+        new Claim(ClaimTypes.Name, "Steam_" + steamId),
+        new Claim(ClaimTypes.Role, role)
     ], CookieAuthenticationDefaults.AuthenticationScheme);
     await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity), new AuthenticationProperties { IsPersistent = true, ExpiresUtc = DateTimeOffset.UtcNow.AddHours(12) });
     await audit.Write("auth.steam", steamId);
@@ -211,20 +219,32 @@ auth.MapGet("/steam/callback", async (SteamAuthService steam, AccessListService 
 }).RequireRateLimiting("auth");
 auth.MapPost("/logout", async (HttpContext context) => { await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme); return Results.NoContent(); }).RequireAuthorization().RequireAntiforgery();
 
-var api = app.MapGroup("/api/v1").RequireAuthorization();
-api.MapModFiles();
-api.MapGet("/status", (ServerState state) => Results.Ok(state.Snapshot()));
-api.MapGet("/monitor", (MonitorService monitor) => Results.Ok(monitor.Snapshot()));
-api.MapGet("/players", (ServerState state) => Results.Ok(state.Players));
-api.MapGet("/players/{platformId}/saved-inventory", async (string platformId, InventoryArchiveService archive, CancellationToken ct) =>
+var api = app.MapGroup("/api/v1").RequireAuthorization("Admin");
+var modApi = app.MapGroup("/api/v1").RequireAuthorization();
+modApi.MapModFiles();
+api.MapGet("/roles", async (ManagerRoleService roles, CancellationToken ct) => Results.Ok(await roles.List(ct)));
+api.MapPut("/roles/{steamId}", async (string steamId, RoleMutation request, HttpContext context, ManagerRoleService roles, AuditService audit, CancellationToken ct) =>
+{
+    if (!ManagerRoleService.ValidSteamId(steamId) || request.Role is not (ManagerRoleService.Admin or ManagerRoleService.Mod))
+        return Results.BadRequest(new ProblemDetails { Title = "Use a 17-digit Steam ID and admin or mod role." });
+    if (steamId == context.User.FindFirstValue(ClaimTypes.NameIdentifier))
+        return Results.BadRequest(new ProblemDetails { Title = "You cannot change your own role." });
+    await roles.SetRole(steamId, request.Role, ct);
+    await audit.Write("manager.role.update", steamId, detail: request.Role);
+    return Results.NoContent();
+}).RequireAntiforgery();
+modApi.MapGet("/status", (ServerState state) => Results.Ok(state.Snapshot()));
+modApi.MapGet("/monitor", (MonitorService monitor) => Results.Ok(monitor.Snapshot()));
+modApi.MapGet("/players", (ServerState state) => Results.Ok(state.Players));
+modApi.MapGet("/players/{platformId}/saved-inventory", async (string platformId, InventoryArchiveService archive, CancellationToken ct) =>
     Results.Ok(await archive.Read(platformId, ct)));
-api.MapPost("/players/{platformId}/saved-inventory/edits", async (string platformId, InventoryMutation edit, InventoryArchiveService archive, CancellationToken ct) =>
+modApi.MapPost("/players/{platformId}/saved-inventory/edits", async (string platformId, InventoryMutation edit, InventoryArchiveService archive, CancellationToken ct) =>
 {
     try { return Results.Ok(await archive.Queue(platformId, edit, ct)); }
     catch (Exception error) when (error is ArgumentException or FileNotFoundException or InvalidOperationException)
     { return Results.BadRequest(new ProblemDetails { Title = "Inventory edit could not be queued", Detail = error.Message }); }
 }).RequireAntiforgery();
-api.MapPost("/notifications", async (NotificationRequest request, AgentGateway agent, AuditService audit) =>
+modApi.MapPost("/notifications", async (NotificationRequest request, AgentGateway agent, AuditService audit) =>
 {
     var message = request.Message?.Trim() ?? "";
     if (message.Length is < 1 or > 300 || message.Any(character => char.IsControl(character) && character != '\n'))
@@ -245,9 +265,9 @@ api.MapPost("/notifications", async (NotificationRequest request, AgentGateway a
         return Results.Conflict(new ProblemDetails { Title = "Notification was not sent", Detail = result.TryGetProperty("error", out var error) ? error.GetString() : null });
     return Results.Json(result);
 }).RequireAntiforgery();
-api.MapGet("/player-directory", async (PlayerDirectoryService directory, CancellationToken ct) => Results.Ok(await directory.List(ct)));
-api.MapGet("/steam-profiles", async (string? ids, SteamProfileService profiles, CancellationToken ct) => Results.Ok(await profiles.Get(ids, ct)));
-api.MapPost("/players/{peerId:long}/kick", async (long peerId, ModerationRequest request, AgentGateway agent, ServerMessageService messages, ServerState state, AuditService audit, CancellationToken ct) =>
+modApi.MapGet("/player-directory", async (PlayerDirectoryService directory, CancellationToken ct) => Results.Ok(await directory.List(ct)));
+modApi.MapGet("/steam-profiles", async (string? ids, SteamProfileService profiles, CancellationToken ct) => Results.Ok(await profiles.Get(ids, ct)));
+modApi.MapPost("/players/{peerId:long}/kick", async (long peerId, ModerationRequest request, AgentGateway agent, ServerMessageService messages, ServerState state, AuditService audit, CancellationToken ct) =>
 {
     var reason = ServerMessageService.NormalizeReason(request.Reason);
     var player = state.Players.FirstOrDefault(item => item.PeerId == peerId)?.Name ?? peerId.ToString();
@@ -257,7 +277,7 @@ api.MapPost("/players/{peerId:long}/kick", async (long peerId, ModerationRequest
     await audit.Write("player.kick", peerId.ToString(), ok ? "success" : "failure", ok ? $"reason:{reason}" : result.ToString());
     return Results.Json(result);
 }).RequireAntiforgery();
-api.MapPost("/players/{peerId:long}/ban", async (long peerId, ModerationRequest request, AgentGateway agent, ServerMessageService messages, ServerState state, AuditService audit, CancellationToken ct) =>
+modApi.MapPost("/players/{peerId:long}/ban", async (long peerId, ModerationRequest request, AgentGateway agent, ServerMessageService messages, ServerState state, AuditService audit, CancellationToken ct) =>
 {
     var reason = ServerMessageService.NormalizeReason(request.Reason);
     var player = state.Players.FirstOrDefault(item => item.PeerId == peerId)?.Name ?? peerId.ToString();
@@ -267,7 +287,7 @@ api.MapPost("/players/{peerId:long}/ban", async (long peerId, ModerationRequest 
     await audit.Write("player.ban", peerId.ToString(), ok ? "success" : "failure", ok ? $"reason:{reason}" : result.ToString());
     return Results.Json(result);
 }).RequireAntiforgery();
-api.MapPost("/players/{peerId:long}/inventory", async (long peerId, AgentGateway agent, AuditService audit) =>
+modApi.MapPost("/players/{peerId:long}/inventory", async (long peerId, AgentGateway agent, AuditService audit) =>
 {
     var result = await agent.Command("inventory.request", new { peerId }, TimeSpan.FromSeconds(15));
     var ok = !result.TryGetProperty("ok", out var succeeded) || succeeded.GetBoolean();
@@ -279,14 +299,14 @@ api.MapPost("/players/{peerId:long}/inventory", async (long peerId, AgentGateway
     }
     return Results.Json(result);
 }).RequireAntiforgery();
-api.MapGet("/players/{peerId:long}/items", async (long peerId, AgentGateway agent) =>
+modApi.MapGet("/players/{peerId:long}/items", async (long peerId, AgentGateway agent) =>
 {
     var result = await agent.Command("items.catalog", new { peerId }, TimeSpan.FromSeconds(15));
     if (result.TryGetProperty("ok", out var succeeded) && !succeeded.GetBoolean())
         return Results.Conflict(new ProblemDetails { Title = "Item catalog unavailable", Detail = result.TryGetProperty("error", out var error) ? error.GetString() : null });
     return Results.Json(result);
 });
-api.MapPost("/players/{peerId:long}/give", async (long peerId, GiveItemRequest request, AgentGateway agent, AuditService audit) =>
+modApi.MapPost("/players/{peerId:long}/give", async (long peerId, GiveItemRequest request, AgentGateway agent, AuditService audit) =>
 {
     var prefab = request.Prefab?.Trim() ?? "";
     if (prefab.Length is < 1 or > 128 || request.Quantity is < 1 or > 1000 || request.Quality is < 1 or > 100)
@@ -299,7 +319,7 @@ api.MapPost("/players/{peerId:long}/give", async (long peerId, GiveItemRequest r
         return Results.Conflict(new ProblemDetails { Title = "Item could not be delivered", Detail = result.TryGetProperty("error", out var error) ? error.GetString() : null });
     return Results.Json(result);
 }).RequireAntiforgery();
-api.MapPost("/players/{peerId:long}/items/edit", async (long peerId, EditItemRequest request, AgentGateway agent, AuditService audit) =>
+modApi.MapPost("/players/{peerId:long}/items/edit", async (long peerId, EditItemRequest request, AgentGateway agent, AuditService audit) =>
 {
     if (request.Action is not ("replace" or "remove") || request.Prefab is null || request.Prefab.Length is < 1 or > 128 ||
         request.X is < 0 or > 15 || request.Y is < 0 or > 15 || request.ExpectedStack is < 1 or > 1000 ||
@@ -314,20 +334,20 @@ api.MapPost("/players/{peerId:long}/items/edit", async (long peerId, EditItemReq
     return Results.Json(result);
 }).RequireAntiforgery();
 
-api.MapGet("/characters", (ServerCharacterService characters, ServerState state) => Results.Ok(new
+modApi.MapGet("/characters", (ServerCharacterService characters, ServerState state) => Results.Ok(new
 {
     installed = characters.IsInstalled,
     importAvailable = characters.ImportAvailable,
     serverStatus = state.Status,
     characters = characters.List()
 }));
-api.MapGet("/characters/{fileName}/inventory", async (string fileName, ServerCharacterService characters, CancellationToken ct) =>
+modApi.MapGet("/characters/{fileName}/inventory", async (string fileName, ServerCharacterService characters, CancellationToken ct) =>
 {
     try { return Results.Ok(await characters.Inventory(fileName, null, ct)); }
     catch (Exception error) when (error is FileNotFoundException or InvalidDataException or InvalidOperationException)
     { return Results.Conflict(new ProblemDetails { Title = "Character inventory unavailable", Detail = error.Message }); }
 });
-api.MapPost("/characters/{fileName}/inventory", async (string fileName, CharacterInventoryEdit edit, ServerCharacterService characters, AuditService audit, CancellationToken ct) =>
+modApi.MapPost("/characters/{fileName}/inventory", async (string fileName, CharacterInventoryEdit edit, ServerCharacterService characters, AuditService audit, CancellationToken ct) =>
 {
     if (edit.Action is not ("give" or "replace" or "remove"))
         return Results.BadRequest(new ProblemDetails { Title = "Invalid inventory action." });
@@ -340,7 +360,7 @@ api.MapPost("/characters/{fileName}/inventory", async (string fileName, Characte
     catch (Exception error) when (error is FileNotFoundException or InvalidDataException or InvalidOperationException)
     { return Results.Conflict(new ProblemDetails { Title = "Character inventory edit failed", Detail = error.Message }); }
 }).RequireAntiforgery();
-api.MapPost("/characters/import", async (HttpRequest request, ServerCharacterService characters, AuditService audit, CancellationToken ct) =>
+modApi.MapPost("/characters/import", async (HttpRequest request, ServerCharacterService characters, AuditService audit, CancellationToken ct) =>
 {
     if (!request.HasFormContentType) return Results.BadRequest(new ProblemDetails { Title = "multipart/form-data is required." });
     var form = await request.ReadFormAsync(ct);
@@ -355,33 +375,35 @@ api.MapPost("/characters/import", async (HttpRequest request, ServerCharacterSer
     return Results.Created($"/api/v1/characters/{Uri.EscapeDataString(imported.FileName)}", imported);
 }).RequireAntiforgery();
 
-api.MapGet("/access", async (AccessListService access) =>
+modApi.MapGet("/access", async (AccessListService access) =>
 {
     var permitted = await access.Read("permitted");
     return Results.Ok(new { whitelistEnabled = permitted.Count > 0, permitted, banned = await access.Read("banned"), admins = await access.Read("admin") });
 });
-api.MapGet("/join-requests", async (string? status, JoinRequestService requests, CancellationToken ct) => Results.Ok(await requests.List(status, ct)));
-api.MapPost("/join-requests/{id:guid}/approve", async (Guid id, JoinRequestService requests, AccessListService access, AuditService audit, CancellationToken ct) =>
+modApi.MapGet("/join-requests", async (string? status, JoinRequestService requests, CancellationToken ct) => Results.Ok(await requests.List(status, ct)));
+modApi.MapPost("/join-requests/{id:guid}/approve", async (Guid id, JoinRequestService requests, AccessListService access, AuditService audit, CancellationToken ct) =>
     Results.Ok(await requests.Resolve(id, "approved", access, audit, ct))).RequireAntiforgery();
-api.MapPost("/join-requests/{id:guid}/deny", async (Guid id, JoinRequestService requests, AccessListService access, AuditService audit, CancellationToken ct) =>
+modApi.MapPost("/join-requests/{id:guid}/deny", async (Guid id, JoinRequestService requests, AccessListService access, AuditService audit, CancellationToken ct) =>
     Results.Ok(await requests.Resolve(id, "denied", access, audit, ct))).RequireAntiforgery();
-api.MapPost("/access/{kind}/", async (string kind, AccessMutation request, AccessListService access, AuditService audit) =>
+modApi.MapPost("/access/{kind}/", async (string kind, AccessMutation request, HttpContext context, AccessListService access, AuditService audit) =>
 {
+    if (kind == "admin" && !context.User.IsInRole(ManagerRoleService.Admin)) return Results.Forbid();
     await access.Add(kind, request.PlatformId);
     await audit.Write($"access.{kind}.add", request.PlatformId);
     return Results.NoContent();
 }).RequireAntiforgery();
-api.MapDelete("/access/{kind}/{*platformId}", async (string kind, string platformId, AccessListService access, AuditService audit) =>
+modApi.MapDelete("/access/{kind}/{*platformId}", async (string kind, string platformId, HttpContext context, AccessListService access, AuditService audit) =>
 {
+    if (kind == "admin" && !context.User.IsInRole(ManagerRoleService.Admin)) return Results.Forbid();
     await access.Remove(kind, Uri.UnescapeDataString(platformId));
     await audit.Write($"access.{kind}.remove", platformId);
     return Results.NoContent();
 }).RequireAntiforgery();
 
-api.MapGet("/mods", async (ManagerDbContext db) => Results.Ok(await db.InstalledMods.AsNoTracking().OrderBy(x => x.Name).ToListAsync()));
+modApi.MapGet("/mods", async (ManagerDbContext db) => Results.Ok(await db.InstalledMods.AsNoTracking().OrderBy(x => x.Name).ToListAsync()));
 api.MapGet("/mods/search", async (string q, ModService mods, CancellationToken ct) => Results.Ok(await mods.Search(q ?? "", ct)));
-api.MapGet("/mods/updates", (ModService mods) => Results.Ok(mods.AvailableUpdates));
-api.MapGet("/mods/client-policies", async (ClientModManifestService manifests, CancellationToken ct) => Results.Ok(await manifests.Policies(ct)));
+modApi.MapGet("/mods/updates", (ModService mods) => Results.Ok(mods.AvailableUpdates));
+modApi.MapGet("/mods/client-policies", async (ClientModManifestService manifests, CancellationToken ct) => Results.Ok(await manifests.Policies(ct)));
 api.MapPost("/mods/{id:guid}/client-policy", async (Guid id, ClientPolicyMutation request, ClientModManifestService manifests, AgentGateway agent, AuditService audit, CancellationToken ct) =>
 {
     await manifests.SetPolicy(id, request.Policy, ct);
@@ -389,10 +411,10 @@ api.MapPost("/mods/{id:guid}/client-policy", async (Guid id, ClientPolicyMutatio
     await audit.Write("mod.client-policy", id.ToString(), detail: request.Policy);
     return Results.NoContent();
 }).RequireAntiforgery();
-api.MapGet("/mods/client-sync", async (ClientModManifestService manifests, CancellationToken ct) => Results.Ok(await manifests.Status(ct)));
-api.MapGet("/mods/client-manifest", async (ClientModManifestService manifests, CancellationToken ct) => Results.Text(await manifests.BuildJson(ct), "application/json"));
-api.MapGet("/mods/{id:guid}/configs", async (Guid id, ModConfigService configs, CancellationToken ct) => Results.Ok(await configs.List(id, ct)));
-api.MapPost("/mods/{id:guid}/configs", async (Guid id, ModConfigUpdate request, ModConfigService configs, CancellationToken ct) =>
+modApi.MapGet("/mods/client-sync", async (ClientModManifestService manifests, CancellationToken ct) => Results.Ok(await manifests.Status(ct)));
+modApi.MapGet("/mods/client-manifest", async (ClientModManifestService manifests, CancellationToken ct) => Results.Text(await manifests.BuildJson(ct), "application/json"));
+modApi.MapGet("/mods/{id:guid}/configs", async (Guid id, ModConfigService configs, CancellationToken ct) => Results.Ok(await configs.List(id, ct)));
+modApi.MapPost("/mods/{id:guid}/configs", async (Guid id, ModConfigUpdate request, ModConfigService configs, CancellationToken ct) =>
     Results.Ok(await configs.Update(id, request.File, request.Revision, request.Values, ct))).RequireAntiforgery();
 api.MapPost("/mods/configs/apply", async (ModService mods, CancellationToken ct) =>
 {
@@ -478,7 +500,7 @@ api.MapPut("/settings/discord-activity", async (DiscordActivitySettings request,
     return Results.Ok(saved);
 }).RequireAntiforgery();
 
-api.MapGet("/manager-update", async (ManagerUpdateService updates, CancellationToken ct) => Results.Ok(await updates.Get(ct)));
+modApi.MapGet("/manager-update", async (ManagerUpdateService updates, CancellationToken ct) => Results.Ok(await updates.Get(ct)));
 api.MapPost("/manager-update/check", async (ManagerUpdateService updates, CancellationToken ct) => Results.Ok(await updates.Check(ct))).RequireAntiforgery();
 api.MapPut("/manager-update/settings", async (ManagerUpdateSettings request, ManagerUpdateService updates, CancellationToken ct) => Results.Ok(await updates.SetAutomatic(request.Automatic, ct))).RequireAntiforgery();
 api.MapPost("/manager-update/apply", async (ManagerUpdateService updates, CancellationToken ct) => Results.Accepted(value: await updates.RequestApply(false, ct))).RequireAntiforgery();
@@ -525,8 +547,12 @@ api.MapPost("/webhooks/{id:guid}/test", async (Guid id, ManagerDbContext db, Eve
 api.MapGet("/webhooks/deliveries", async (ManagerDbContext db) => Results.Ok((await db.WebhookDeliveries.AsNoTracking().ToListAsync()).OrderByDescending(x => x.CreatedAt).Take(200)));
 api.MapPost("/webhooks/deliveries/{id:guid}/redeliver", async (Guid id, ManagerDbContext db, AuditService audit) => { var item = await db.WebhookDeliveries.FindAsync(id); if (item is null) return Results.NotFound(); item.Status = "pending"; item.Attempts = 0; item.NextAttemptAt = DateTimeOffset.UtcNow; await db.SaveChangesAsync(); await audit.Write("webhook.redeliver", id.ToString()); return Results.Accepted(); }).RequireAntiforgery();
 
-api.MapGet("/console/history", (ServerState state) => Results.Ok(state.Logs));
-api.MapPost("/console", async (CommandRequest request, SafeConsoleService console, CancellationToken ct) => Results.Ok(await console.Execute(request.Command, ct))).RequireAntiforgery();
+modApi.MapGet("/console/history", (ServerState state) => Results.Ok(state.Logs));
+modApi.MapPost("/console", async (CommandRequest request, HttpContext context, SafeConsoleService console, CancellationToken ct) =>
+{
+    if (SafeConsoleService.IsRestartCommand(request.Command) && !context.User.IsInRole(ManagerRoleService.Admin)) return Results.Forbid();
+    return Results.Ok(await console.Execute(request.Command, ct));
+}).RequireAntiforgery();
 api.MapGet("/audit", async (ManagerDbContext db) => Results.Ok((await db.AuditRecords.AsNoTracking().ToListAsync()).OrderByDescending(x => x.OccurredAt).Take(500)));
 api.MapPost("/server/start", async (ProcessSupervisor process, AuditService audit, CancellationToken ct) => { await process.StartServer(ct); await audit.Write("server.start", "valheim"); return Results.Accepted(); }).RequireAntiforgery();
 api.MapPost("/server/stop", async (ProcessSupervisor process, AgentGateway agent, AuditService audit, CancellationToken ct) => { if (agent.IsConnected) await agent.Command("world.save", new { }, TimeSpan.FromSeconds(60)); await process.StopServer(ct); await audit.Write("server.stop", "valheim"); return Results.Accepted(); }).RequireAntiforgery();

@@ -8,7 +8,7 @@ A self-hosted Valheim control plane with a web dashboard, live server agent, ser
 - React/shadcn dashboard with a live monitor for player count, process CPU and RAM, recent events, character inspection, access lists, Thunderstore/manual mods, webhooks, safe console commands, and auditing. Monitor charts retain one hour of five-second samples in manager memory.
 - BepInEx server agent built at startup against the exact installed Valheim assemblies.
 - Inventory inspection is a mandatory server admission rule. Server-owned characters remain independently optional; every player needs the Server Manager client runtime and inventory sharing enabled.
-- SQLite persistence, Steam OpenID authentication restricted to `adminlist.txt`, secure cookies, CSRF protection, login throttling, SignalR updates, signed webhook delivery, and automatic mod rollback.
+- SQLite persistence, Steam OpenID authentication with admin and moderator roles, secure cookies, CSRF protection, login throttling, SignalR updates, signed webhook delivery, and automatic mod rollback.
 
 The server plugin identifier is `dev.creaton.valheim-server-manager`; the bundled client runtime uses `dev.creaton.valheim-server-manager.client`. Older `dev.monokai.*` configuration files are copied forward automatically on first load and retained as rollback copies.
 
@@ -23,7 +23,13 @@ docker compose pull
 docker compose up -d
 ```
 
-That starts a private, passwordless server with inventory-sharing admission enabled. Players need the Server Manager runtime with inventory sharing enabled to stay connected. Open port `8080` for the dashboard and UDP `2456-2458` for Valheim. Set `VSM_PUBLIC_URL` before using Steam dashboard sign-in; the authenticated Steam64 ID must appear in `adminlist.txt` as either `Steam_<id>` or the numeric ID. Put the dashboard behind HTTPS before exposing it to the internet.
+That starts a private, passwordless server with inventory-sharing admission enabled. Players need the Server Manager runtime with inventory sharing enabled to stay connected. Open port `8080` for the dashboard and UDP `2456-2458` for Valheim. Set `VSM_PUBLIC_URL` before using Steam dashboard sign-in. Initially, a Steam64 ID in `adminlist.txt` (either `Steam_<id>` or the numeric ID) gets manager admin access. Put the dashboard behind HTTPS before exposing it to the internet.
+
+## Dashboard roles
+
+Admins can use every dashboard feature. Under **Settings → Roles**, an admin can assign another 17-digit Steam ID the **Admin** or **Moderator** role. Assigned roles are stored in the manager database and take effect on the next request, including for an existing session. An explicit moderator assignment overrides the default dashboard admin access granted by `adminlist.txt`; it does not change Valheim's in-game admin privileges.
+
+Moderators can monitor the server, manage player admission and bans, inspect and edit inventories, use safe console commands, and edit mod configuration files. Server start, stop, and restart; applying pending mod or config changes; manager settings; role changes; webhook and API token management; and mod package installation, updating, enabling, disabling, and removal require an admin. The console `restart` command also requires an admin.
 
 The first start takes several minutes because it downloads Valheim, installs BepInEx, and compiles both plugins. Game, world, manager, log, and BepInEx data live in named Docker volumes. Each container start checks Thunderstore for a newer BepInExPack and upgrades its managed core and launcher files on the persistent server volume before building the plugins; existing mod plugins and BepInEx config are preserved. Set `BEPINEX_PACK_VERSION` only if you need to pin a specific pack release.
 

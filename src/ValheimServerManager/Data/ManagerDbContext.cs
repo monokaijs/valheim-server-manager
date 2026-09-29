@@ -65,6 +65,13 @@ public sealed class ManagerSetting
     public string Value { get; set; } = "";
 }
 
+public sealed class ManagerUserRole
+{
+    public string SteamId { get; set; } = "";
+    public string Role { get; set; } = "";
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
 public sealed class ApiToken
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -125,6 +132,7 @@ public sealed class ManagerDbContext(DbContextOptions<ManagerDbContext> options)
     public DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
     public DbSet<InstalledMod> InstalledMods => Set<InstalledMod>();
     public DbSet<ManagerSetting> ManagerSettings => Set<ManagerSetting>();
+    public DbSet<ManagerUserRole> ManagerUserRoles => Set<ManagerUserRole>();
     public DbSet<ApiToken> ApiTokens => Set<ApiToken>();
     public DbSet<JoinRequestRecord> JoinRequests => Set<JoinRequestRecord>();
     public DbSet<KnownPlayer> KnownPlayers => Set<KnownPlayer>();
@@ -135,6 +143,7 @@ public sealed class ManagerDbContext(DbContextOptions<ManagerDbContext> options)
     {
         base.OnModelCreating(builder);
         builder.Entity<ManagerSetting>().HasKey(x => x.Key);
+        builder.Entity<ManagerUserRole>().HasKey(x => x.SteamId);
         builder.Entity<AuditRecord>().HasIndex(x => x.OccurredAt);
         builder.Entity<WebhookDelivery>().HasIndex(x => new { x.Status, x.NextAttemptAt });
         builder.Entity<InstalledMod>().HasIndex(x => new { x.Namespace, x.Name }).IsUnique();

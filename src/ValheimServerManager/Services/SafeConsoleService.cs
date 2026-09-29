@@ -77,4 +77,9 @@ public sealed class SafeConsoleService(AgentGateway agent, ProcessSupervisor sup
         return result;
     }
     internal static bool IsAllowedCommand(string command) => AllowedCommands.Contains(command);
+    public static bool IsRestartCommand(string input)
+    {
+        var parts = Tokenize(input);
+        return parts.Count > 0 && parts[0].Equals("restart", StringComparison.OrdinalIgnoreCase);
+    }
 }

@@ -31,6 +31,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   activeId: string
   onNavigate: (id: string) => void
   userName: string
+  role?: "admin" | "mod"
   steamId?: string
   avatarUrl?: string
   onlinePlayers: number
@@ -38,7 +39,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   onLogout: () => void
 }
 
-export function AppSidebar({ items, activeId, onNavigate, userName, steamId, avatarUrl, onlinePlayers, agentConnected, onLogout, ...props }: AppSidebarProps) {
+export function AppSidebar({ items, activeId, onNavigate, userName, role, steamId, avatarUrl, onlinePlayers, agentConnected, onLogout, ...props }: AppSidebarProps) {
   const { isMobile, setOpenMobile } = useSidebar()
   const navigate = (id: string) => { onNavigate(id); if (isMobile) setOpenMobile(false) }
   return (
@@ -88,6 +89,7 @@ export function AppSidebar({ items, activeId, onNavigate, userName, steamId, ava
               </Avatar>
               <div className="min-w-0 flex-1 text-left text-sm leading-tight">
                 <span className="block truncate font-medium">{userName}</span>
+                {role && <span className="block text-[11px] text-primary">{role === "admin" ? "Administrator" : "Moderator"}</span>}
                 {steamId && <a className="block truncate text-[11px] text-muted-foreground hover:text-primary hover:underline" href={`https://steamcommunity.com/profiles/${steamId}`} target="_blank" rel="noreferrer">View Steam profile</a>}
               </div>
               <Button variant="ghost" size="icon-sm" onClick={onLogout} aria-label="Sign out"><LogOutIcon /></Button>
