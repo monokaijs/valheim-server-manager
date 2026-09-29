@@ -19,7 +19,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager.client";
     public const string PluginName = "Valheim Server Manager Client";
-    public const string PluginVersion = "2.7.1";
+    public const string PluginVersion = "2.7.2";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.client";
     internal static ClientPlugin Instance { get; private set; }
     private ConfigEntry<bool> _allowInventory;
@@ -69,6 +69,13 @@ public sealed class ClientPlugin : BaseUnityPlugin
     private PlayerProfile _serverProfile;
     private string _temporaryProfileName;
     private bool _uploading;
+    private string _pendingDeathId;
+    private string _deathProfileEncoded;
+    private Player _deathPlayer;
+    private bool _deathExecuting;
+    private bool _deathProcessed;
+    private float _nextDeathRetry;
+    private float _deathDeadline;
     private Heightmap.Biome _biome;
     private ZNetPeer _serverPeer;
     private ZRpc _serverRpc;
@@ -154,6 +161,8 @@ public sealed class ClientPlugin : BaseUnityPlugin
             ZRoutedRpc.instance.Register<string, string>("VSM_EditItem", OnEditItem);
             ZRoutedRpc.instance.Register<bool, string, bool>("VSM_CharacterProfile", OnCharacterProfile);
             ZRoutedRpc.instance.Register("VSM_CharacterCheckpoint", OnCharacterCheckpoint);
+            ZRoutedRpc.instance.Register<string>("VSM_DeathPrepared", OnDeathPrepared);
+            ZRoutedRpc.instance.Register<string>("VSM_DeathCommitted", OnDeathCommitted);
             ZRoutedRpc.instance.Register<string, string>("VSM_AdminNotice", OnAdminNotice);
             _registeredRouter = ZRoutedRpc.instance;
         }
@@ -187,6 +196,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         if (_pendingCharacterProfile != null && Game.instance != null) ApplyServerProfile();
         if (_pendingFirstProfile && Game.instance != null) PrepareFirstProfile();
         if (_bootstrapPending && Player.m_localPlayer != null && Game.instance != null) AdoptCurrentProfile();
+        RetryPendingDeath();
         if (_handshake.HasTimedOut(Time.unscaledTime))
             FailCharacter("Server character timed out", "Your server character did not finish loading. Return to the menu and reconnect. If this continues, ask an administrator to check your server save.");
         if (_handshake.RequiresCharacter && _handshake.Ready && Player.m_localPlayer != null && Time.unscaledTime >= _nextCharacterUpload)
@@ -395,8 +405,76 @@ public sealed class ClientPlugin : BaseUnityPlugin
         if (_serverRpc != null && sender == ServerPeerId()) UploadCharacter();
     }
 
-    internal void UploadCharacter(bool alreadySaved = false)
+    private bool PrepareDeath(Player player)
     {
+        if (player != Player.m_localPlayer || !_handshake.RequiresCharacter) return true;
+        if (_deathExecuting) return true;
+        if (!_handshake.Ready || _serverRpc == null)
+        {
+            FailCharacter("Death save unavailable", "The server could not prepare your death save. Reconnect and ask an administrator for help if your character remains locked.");
+            return false;
+        }
+        if (_pendingDeathId == null)
+        {
+            _pendingDeathId = Guid.NewGuid().ToString("N");
+            _deathPlayer = player;
+            _deathDeadline = Time.unscaledTime + 20f;
+            _nextDeathRetry = Time.unscaledTime + 2f;
+            InvokeServer("VSM_DeathBegin", _pendingDeathId);
+        }
+        return false;
+    }
+
+    private void OnDeathPrepared(long sender, string deathId)
+    {
+        if (_serverRpc == null || sender != ServerPeerId() || deathId != _pendingDeathId || _deathPlayer == null) return;
+        if (_deathProcessed)
+        {
+            if (_deathProfileEncoded != null) InvokeServer("VSM_DeathUpload", deathId, _deathProfileEncoded);
+            return;
+        }
+        try
+        {
+            _deathExecuting = true;
+            var onDeath = AccessTools.Method(typeof(Player), "OnDeath");
+            if (onDeath == null) throw new MissingMethodException("Player.OnDeath is unavailable.");
+            onDeath.Invoke(_deathPlayer, null);
+        }
+        catch (Exception exception)
+        {
+            Logger.LogError("Could not finish prepared death: " + exception);
+            FailCharacter("Death save needs recovery", "The server prepared your death, but the game could not finish it. Ask an administrator to inspect your character and grave before reconnecting.");
+        }
+        finally { _deathExecuting = false; }
+    }
+
+    private void OnDeathCommitted(long sender, string deathId)
+    {
+        if (_serverRpc == null || sender != ServerPeerId() || deathId != _pendingDeathId || !_deathProcessed) return;
+        _pendingDeathId = null;
+        _deathProfileEncoded = null;
+        _deathPlayer = null;
+        _deathProcessed = false;
+        _nextCharacterUpload = Time.unscaledTime + 30f;
+    }
+
+    private void RetryPendingDeath()
+    {
+        if (_handshake.Failed || _pendingDeathId == null || Time.unscaledTime < _nextDeathRetry) return;
+        if (Time.unscaledTime >= _deathDeadline || _serverRpc == null)
+        {
+            FailCharacter("Death save needs recovery", "Your death save was not confirmed. Ask an administrator to inspect your character and grave before reconnecting.");
+            return;
+        }
+        _nextDeathRetry = Time.unscaledTime + 2f;
+        if (!_deathProcessed) InvokeServer("VSM_DeathBegin", _pendingDeathId);
+        else if (_deathProfileEncoded != null) InvokeServer("VSM_DeathUpload", _pendingDeathId, _deathProfileEncoded);
+        else UploadCharacter(deathId: _pendingDeathId);
+    }
+
+    internal void UploadCharacter(bool alreadySaved = false, string deathId = null)
+    {
+        if (_pendingDeathId != null && deathId != _pendingDeathId) return;
         if (_uploading || !_handshake.RequiresCharacter || !_handshake.Ready || _serverProfile == null || Player.m_localPlayer == null || _serverRpc == null) return;
         _uploading = true;
         try
@@ -410,7 +488,13 @@ public sealed class ClientPlugin : BaseUnityPlugin
             var path = _serverProfile.GetPath();
             var bytes = File.ReadAllBytes(path);
             if (bytes.Length > 2 * 1024 * 1024) throw new InvalidDataException("Server character profile exceeds 2 MiB.");
-            InvokeServer("VSM_CharacterUpload", Convert.ToBase64String(bytes));
+            var encoded = Convert.ToBase64String(bytes);
+            if (deathId != null)
+            {
+                _deathProfileEncoded = encoded;
+                InvokeServer("VSM_DeathUpload", deathId, encoded);
+            }
+            else InvokeServer("VSM_CharacterUpload", encoded);
             _nextCharacterUpload = Time.unscaledTime + 30f;
             try { File.Delete(path); } catch { }
         }
@@ -444,6 +528,9 @@ public sealed class ClientPlugin : BaseUnityPlugin
         _pendingFirstProfile = false;
         _pendingCharacterProfile = null;
         _serverProfile = null;
+        _pendingDeathId = _deathProfileEncoded = null;
+        _deathPlayer = null;
+        _deathExecuting = _deathProcessed = false;
         _temporaryProfileName = null;
         _serverPeer = null;
         _serverRpc = null;
@@ -506,6 +593,8 @@ public sealed class ClientPlugin : BaseUnityPlugin
             __0.m_rpc.Register<string, string>("VSM_EditItem", (rpc, requestId, json) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnEditItem(__0.m_uid, requestId, json); });
             __0.m_rpc.Register<bool, string, bool>("VSM_CharacterProfile", (rpc, found, encoded, rejectPreviouslyUsed) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnCharacterProfile(__0.m_uid, found, encoded, rejectPreviouslyUsed); });
             __0.m_rpc.Register("VSM_CharacterCheckpoint", rpc => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnCharacterCheckpoint(__0.m_uid); });
+            __0.m_rpc.Register<string>("VSM_DeathPrepared", (rpc, deathId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnDeathPrepared(__0.m_uid, deathId); });
+            __0.m_rpc.Register<string>("VSM_DeathCommitted", (rpc, deathId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnDeathCommitted(__0.m_uid, deathId); });
             __0.m_rpc.Register<string, string>("VSM_AdminNotice", (rpc, title, message) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.QueueAdminNotice(title, message); });
             __0.m_rpc.Register<string>("ValheimServerManager_Manifest_v1", (rpc, json) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.ReceiveModCatalog(json); });
             __0.m_rpc.Register<string>("VSM_DiscordActivity", (rpc, json) =>
@@ -891,9 +980,17 @@ public sealed class ClientPlugin : BaseUnityPlugin
     [HarmonyPatch(typeof(Player), "OnDeath")]
     private static class DeathPatch
     {
+        private static bool Prefix(Player __instance) => Instance?.PrepareDeath(__instance) != false;
         private static void Postfix(Player __instance)
         {
-            if (Instance?.TelemetryEnabled != true || __instance != Player.m_localPlayer) return;
+            if (Instance == null || __instance != Player.m_localPlayer) return;
+            if (Instance._pendingDeathId != null)
+            {
+                if (!Instance._deathExecuting) return;
+                Instance._deathProcessed = true;
+                Instance.UploadCharacter(deathId: Instance._pendingDeathId);
+            }
+            if (!Instance.TelemetryEnabled) return;
             var hit = Traverse.Create(__instance).Field("m_lastHit").GetValue<HitData>();
             var attacker = hit?.GetAttacker();
             Instance.SendEvent("player.death.reported", new

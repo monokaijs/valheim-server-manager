@@ -41,6 +41,6 @@ Use a disposable mod-manager profile and a test server before publishing a relea
 
 ## Further protocol work
 
-Character checkpoints still use the existing fire-and-forget upload protocol. A separate durable-save acknowledgment and recovery design would let the client distinguish a transmitted checkpoint from one actually committed by the server, particularly at logout or on abrupt network loss. This deserves its own compatibility and recovery tests rather than being treated as an incidental UI change. First-join migration also warrants an end-to-end comparison of all native profile fields, beyond the current player-data adoption path.
+Ordinary character checkpoints still use the existing fire-and-forget upload protocol. Death saves now use a server-side fence and a commit acknowledgment, but logout and other checkpoints still cannot distinguish a transmitted upload from a committed one. A general durable-save acknowledgment and recovery design remains useful, particularly on abrupt network loss. First-join migration also warrants an end-to-end comparison of all native profile fields, beyond the current player-data adoption path.
 
 The native menu notice panel and the final logout checkpoint were not tested in a running multiplayer game during this review. Those checks remain release prerequisites.

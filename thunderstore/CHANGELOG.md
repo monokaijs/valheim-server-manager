@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.7.2
+
+- Keep five periodic server-owned character restore points, sampled 30 minutes apart while the player is online.
+- Let administrators review and restore a player's saved character from the dashboard after the player disconnects.
+- Persist a death fence before creating a tombstone for a server-owned character, and require a committed post-death profile before clearing it.
+- Hold world admission until a client with the death-safe character protocol connects. Interrupted deaths require administrator recovery instead of restoring a stale inventory.
+
 ## 2.7.0
 
 - Added built-in proximity voice chat with push-to-talk, voice activation, open mic, spatial playback, microphone gain, client opt-out, and server range controls.

@@ -4,6 +4,7 @@
     <RootNamespace>ValheimServerManager</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../plugins/Shared/PeriodicCharacterBackup.cs" Link="ServerSupport/PeriodicCharacterBackup.cs" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
   </ItemGroup>

@@ -28,7 +28,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager";
     public const string PluginName = "Server Manager";
-    public const string PluginVersion = "2.7.1";
+    public const string PluginVersion = "2.7.2";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.server";
     private const string ClientManifestRpc = "ValheimServerManager_Manifest_v1";
     private readonly ConcurrentQueue<Action> _mainThread = new();
@@ -168,6 +168,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
             if (peer == null || string.IsNullOrWhiteSpace(peer.m_playerName)) continue;
             _pendingCharacterProfiles.Remove(peerId);
             SendServerCharacter(peerId);
+            PeerInfoPatch.ReleaseIfReady(peer);
         }
         if (_serverCharactersEnabled.Value) EnforceServerCharacterClients();
         EnforceInventoryInspection();
@@ -652,7 +653,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     private void EnforceServerCharacterClients()
     {
         if (DateTime.UtcNow < _policyGraceUntil) return;
-        foreach (var peer in ZNet.instance.GetPeers().Where(peer => peer != null && _joined.TryGetValue(peer.m_uid, out var joined) && DateTime.UtcNow - joined > TimeSpan.FromSeconds(_clientGraceSeconds.Value) && !_serverCharacterClients.Contains(peer.m_uid) && !_characterEnforcementHandled.Contains(peer.m_uid)).ToArray())
+        foreach (var peer in ZNet.instance.GetPeers().Where(peer => peer != null && _peerConnectedAt.TryGetValue(peer, out var connectedAt) && DateTime.UtcNow - connectedAt > TimeSpan.FromSeconds(_clientGraceSeconds.Value) && !_serverCharacterClients.Contains(peer.m_uid) && !_characterEnforcementHandled.Contains(peer.m_uid)).ToArray())
         {
             _characterEnforcementHandled.Add(peer.m_uid);
             var reason = "A compatible Server Manager client runtime is required for server-owned characters.";
@@ -672,11 +673,20 @@ public sealed class ServerPlugin : BaseUnityPlugin
 
     private void SendServerCharacter(ZNetPeer peer)
     {
-        if (peer == null || peer.m_uid == 0 || !_characterProfileSent.Add(peer.m_uid)) return;
+        if (peer == null || peer.m_uid == 0 || !_serverCharacterClients.Contains(peer.m_uid) || !_characterProfileSent.Add(peer.m_uid)) return;
         _pendingCharacterProfiles.Remove(peer.m_uid);
         try
         {
             var path = CharacterPath(peer);
+            if (DeathFence.IsPending(path))
+            {
+                _characterProfileSent.Remove(peer.m_uid);
+                Logger.LogWarning($"Blocking {peer.m_playerName}: a previous death did not finish saving.");
+                ScheduleKick(peer, "Death save needs recovery",
+                    "Your last death did not finish saving. Ask an administrator to inspect the grave and character save before reconnecting.",
+                    "A death save is pending recovery.", "server-character.death.pending");
+                return;
+            }
             if (File.Exists(path))
             {
                 var bytes = File.ReadAllBytes(path);
@@ -691,6 +701,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
             }
             else
             {
+                _characterProfileSent.Remove(peer.m_uid);
                 Logger.LogWarning($"Rejecting {peer.m_playerName}: no imported server character exists.");
                 ScheduleKick(peer, "Server character required",
                     "No server character exists for you yet. Ask an administrator to import your character save, then reconnect.",
@@ -699,6 +710,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         }
         catch (Exception exception)
         {
+            _characterProfileSent.Remove(peer.m_uid);
             Logger.LogError($"Unable to load server character for {peer.m_playerName}: {exception}");
             Event("server-character.load.failed", new { player = peer.m_playerName, error = exception.Message });
             ScheduleKick(peer, "Server character unavailable",
@@ -760,7 +772,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         if (peer == null || sender == 0) return;
         var firstHello = !_companions.TryGetValue(sender, out var previousInventory);
         _companions[sender] = inventoryAllowed;
-        var characterCapable = System.Version.TryParse(companionVersion, out var version) && version >= new System.Version(1, 2, 0);
+        var characterCapable = System.Version.TryParse(companionVersion, out var version) && version >= new System.Version(2, 7, 2);
         var editCapable = version != null && version >= new System.Version(2, 5, 2);
         if (editCapable) _inventoryEditClients.Add(sender);
         else _inventoryEditClients.Remove(sender);
@@ -780,7 +792,12 @@ public sealed class ServerPlugin : BaseUnityPlugin
             Logger.LogInfo($"Client runtime handshake from peer {sender}: version={companionVersion}, inventory={inventoryAllowed}, serverCharacters={characterCapable}.");
             Event("companion.connected", new { peerId = sender, inventoryAllowed, companionVersion, serverCharacters = characterCapable }, "companion", "reported");
         }
-        if (_serverCharactersEnabled.Value && characterCapable && !_characterProfileSent.Contains(sender)) _pendingCharacterProfiles.Add(sender);
+        if (_serverCharactersEnabled.Value && characterCapable && !_characterProfileSent.Contains(sender))
+        {
+            if (string.IsNullOrWhiteSpace(peer.m_playerName)) _pendingCharacterProfiles.Add(sender);
+            else SendServerCharacter(peer);
+        }
+        PeerInfoPatch.ReleaseIfReady(peer);
     }
 
     internal void CharacterUpload(long sender, string encoded)
@@ -790,23 +807,92 @@ public sealed class ServerPlugin : BaseUnityPlugin
         if (peer == null) return;
         try
         {
-            if (encoded == null || encoded.Length > 2796204) throw new InvalidDataException("Native character profile size is invalid.");
-            var bytes = Convert.FromBase64String(encoded ?? "");
-            if (bytes.Length < 32 || bytes.Length > 2 * 1024 * 1024) throw new InvalidDataException("Native character profile size is invalid.");
-            ValidateNativeProfile(bytes);
             var destination = CharacterPath(peer);
-            Directory.CreateDirectory(Path.GetDirectoryName(destination));
-            BackupCharacter(destination);
-            var temporary = destination + ".vsm-" + Guid.NewGuid().ToString("N") + ".tmp";
-            File.WriteAllBytes(temporary, bytes);
-            if (File.Exists(destination)) File.Replace(temporary, destination, null); else File.Move(temporary, destination);
-            var hash = BitConverter.ToString(SHA256.Create().ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
-            Event("server-character.saved", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), bytes = bytes.Length, sha256 = hash });
+            if (DeathFence.IsPending(destination)) throw new InvalidDataException("A death is pending; ordinary checkpoints cannot restore pre-death items.");
+            SaveCharacter(peer, destination, encoded);
         }
         catch (Exception exception)
         {
             Logger.LogWarning($"Rejected server character upload from {peer.m_playerName}: {exception.Message}");
             Event("server-character.save.failed", new { player = peer.m_playerName, error = exception.Message });
+        }
+    }
+
+    internal void DeathBegin(long sender, string deathId)
+    {
+        if (!_serverCharactersEnabled.Value || !_serverCharacterClients.Contains(sender)) return;
+        var peer = ZNet.instance?.GetPeers().FirstOrDefault(item => item.m_uid == sender);
+        if (peer == null) return;
+        try
+        {
+            var destination = CharacterPath(peer);
+            if (!DeathFence.Begin(destination, deathId)) throw new InvalidDataException("A different death is already pending.");
+            InvokePeer(peer, "VSM_DeathPrepared", deathId);
+            Event("server-character.death.prepared", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), deathId });
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning($"Could not prepare death for {peer.m_playerName}: {exception.Message}");
+            Event("server-character.death.failed", new { player = peer.m_playerName, error = exception.Message });
+        }
+    }
+
+    internal void DeathUpload(long sender, string deathId, string encoded)
+    {
+        if (!_serverCharactersEnabled.Value || !_serverCharacterClients.Contains(sender)) return;
+        var peer = ZNet.instance?.GetPeers().FirstOrDefault(item => item.m_uid == sender);
+        if (peer == null) return;
+        try
+        {
+            var destination = CharacterPath(peer);
+            if (DeathFence.IsCommitted(destination, deathId))
+            {
+                InvokePeer(peer, "VSM_DeathCommitted", deathId);
+                return;
+            }
+            if (!DeathFence.Matches(destination, deathId)) throw new InvalidDataException("Death upload has no matching durable fence.");
+            SaveCharacter(peer, destination, encoded);
+            DeathFence.Complete(destination, deathId);
+            InvokePeer(peer, "VSM_DeathCommitted", deathId);
+            Event("server-character.death.committed", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), deathId });
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning($"Could not commit death for {peer.m_playerName}: {exception.Message}");
+            Event("server-character.death.failed", new { player = peer.m_playerName, error = exception.Message });
+        }
+    }
+
+    private void SaveCharacter(ZNetPeer peer, string destination, string encoded)
+    {
+        if (encoded == null || encoded.Length > 2796204) throw new InvalidDataException("Native character profile size is invalid.");
+        var bytes = Convert.FromBase64String(encoded);
+        if (bytes.Length < 32 || bytes.Length > 2 * 1024 * 1024) throw new InvalidDataException("Native character profile size is invalid.");
+        ValidateNativeProfile(bytes);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination));
+        BackupCharacter(destination);
+        var temporary = destination + ".vsm-" + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush(true);
+            }
+            if (File.Exists(destination)) File.Replace(temporary, destination, null); else File.Move(temporary, destination);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        var hash = BitConverter.ToString(SHA256.Create().ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+        Event("server-character.saved", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), bytes = bytes.Length, sha256 = hash });
+        try
+        {
+            if (PeriodicCharacterBackup.SaveIfDue(destination, bytes, DateTime.UtcNow))
+                Event("server-character.backup.saved", new { player = peer.m_playerName, platformId = peer.m_socket?.GetHostName(), sha256 = hash });
+        }
+        catch (Exception exception)
+        {
+            Logger.LogWarning($"Could not create periodic character backup for {peer.m_playerName}: {exception.Message}");
+            Event("server-character.backup.failed", new { player = peer.m_playerName, error = exception.Message });
         }
     }
     internal void InventoryResponse(long sender, string requestId, string json)
@@ -915,6 +1001,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
         {
             if (ReferenceEquals(rpc, peer.m_rpc)) OnVoiceFrame(peer, encoded);
         });
+        RegisterDeathRpcs(znet, peer);
     }
 
     private bool CanVoice(ZNetPeer peer) => _voiceEnabled && peer != null && peer.m_uid != 0 && peer.IsReady()
@@ -948,6 +1035,20 @@ public sealed class ServerPlugin : BaseUnityPlugin
             if (target == null || (target.GetPosition() - position).sqrMagnitude > rangeSquared) continue;
             InvokePeer(recipient, "VSM_VoiceFrame", packet);
         }
+    }
+
+    private void RegisterDeathRpcs(ZNet znet, ZNetPeer peer)
+    {
+        peer.m_rpc.Register<string>("VSM_DeathBegin", (rpc, deathId) =>
+        {
+            var peerId = (PeerForRpc(znet, rpc) ?? peer).m_uid;
+            if (peerId != 0) DeathBegin(peerId, deathId);
+        });
+        peer.m_rpc.Register<string, string>("VSM_DeathUpload", (rpc, deathId, encoded) =>
+        {
+            var peerId = (PeerForRpc(znet, rpc) ?? peer).m_uid;
+            if (peerId != 0) DeathUpload(peerId, deathId, encoded);
+        });
     }
     private void ClientHelloForPeer(ZNet znet, ZNetPeer peer, ZRpc rpc, bool allowed, string version)
     {
@@ -1027,6 +1128,8 @@ public sealed class ServerPlugin : BaseUnityPlugin
         ZRoutedRpc.instance.Register<string, string>("VSM_GiveResponse", (sender, request, json) => GiveResponse(sender, request, json));
         ZRoutedRpc.instance.Register<string>("VSM_CompanionEvent", (sender, json) => CompanionEvent(sender, json));
         ZRoutedRpc.instance.Register<string>("VSM_CharacterUpload", (sender, encoded) => CharacterUpload(sender, encoded));
+        ZRoutedRpc.instance.Register<string>("VSM_DeathBegin", (sender, deathId) => DeathBegin(sender, deathId));
+        ZRoutedRpc.instance.Register<string, string>("VSM_DeathUpload", (sender, deathId, encoded) => DeathUpload(sender, deathId, encoded));
         _rpcsRegistered = true;
     }
 
@@ -1120,22 +1223,26 @@ public sealed class ServerPlugin : BaseUnityPlugin
         {
             if (!__instance.IsServer()) return;
             var peer = PeerForRpc(__instance, rpc);
-            var holdForMods = false;
+            var holdForAdmission = false;
             try
             {
-                // Send the server character before releasing Valheim's world data.
+                // Direct policy RPCs pass through the buffered socket. World data stays
+                // held until the client proves it supports the death-safe character protocol.
                 if (__state != null && Instance._serverCharactersEnabled.Value)
                 {
                     InvokePeer(peer, "VSM_ServerPolicy", true, Instance._clientGraceSeconds.Value);
                     Instance.SendServerCharacter(peer);
                 }
-                holdForMods = __state != null && peer != null && !string.IsNullOrEmpty(Instance._requiredModRevision)
+                var holdForCharacter = Instance._serverCharactersEnabled.Value
+                    && (peer == null || !Instance._serverCharacterClients.Contains(peer.m_uid) || !Instance._characterProfileSent.Contains(peer.m_uid));
+                var holdForMods = peer != null && !string.IsNullOrEmpty(Instance._requiredModRevision)
                     && (!Instance._modReceipts.TryGetValue(peer, out var receipt) || receipt != Instance._requiredModRevision);
-                if (!holdForMods) Instance.Joined(peer);
+                holdForAdmission = __state != null && (holdForCharacter || holdForMods);
+                if (!holdForAdmission) Instance.Joined(peer);
             }
             finally
             {
-                if (holdForMods) PendingModGates[peer] = __state;
+                if (holdForAdmission && peer != null) PendingModGates[peer] = __state;
                 else RestoreSocket(rpc, __state);
             }
         }
@@ -1156,6 +1263,8 @@ public sealed class ServerPlugin : BaseUnityPlugin
         internal static void ReleaseIfReady(ZNetPeer peer)
         {
             if (peer == null || !PendingModGates.TryGetValue(peer, out var state)) return;
+            if (Instance._serverCharactersEnabled.Value &&
+                (!Instance._serverCharacterClients.Contains(peer.m_uid) || !Instance._characterProfileSent.Contains(peer.m_uid))) return;
             if (!string.IsNullOrEmpty(Instance._requiredModRevision)
                 && (!Instance._modReceipts.TryGetValue(peer, out var receipt) || receipt != Instance._requiredModRevision)) return;
             PendingModGates.Remove(peer);

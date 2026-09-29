@@ -2,12 +2,16 @@ using System.Security.Cryptography;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using ValheimServerManager.ServerSupport;
 
 namespace ValheimServerManager.Services;
 
 public sealed record ServerCharacterFile(string PlatformId, string CharacterName, string FileName, long Size, DateTimeOffset ModifiedAt, string Sha256);
 public sealed record CharacterInventoryEdit(string Action, string? Prefab, int Quantity, int Quality, int X, int Y, JsonElement? Item, string Revision, int MaxStack = 1);
 public sealed record CharacterInventory(string CharacterName, string Revision, JsonElement Items, JsonElement? Catalog, int Given = 0);
+public sealed record ServerCharacterBackup(string FileName, DateTimeOffset CreatedAt, long Size, string Sha256);
+public sealed record ServerCharacterBackupSet(string CharacterName, string Revision, bool Online, bool PendingDeath, IReadOnlyList<ServerCharacterBackup> Backups);
+public sealed record CharacterBackupRestore(string Revision, string BackupSha256);
 
 public sealed partial class ServerCharacterService(IConfiguration configuration, ServerState state)
 {
@@ -103,6 +107,72 @@ public sealed partial class ServerCharacterService(IConfiguration configuration,
             .ToArray();
     }
 
+    public ServerCharacterBackupSet Backups(string fileName)
+    {
+        var character = List().SingleOrDefault(item => string.Equals(item.FileName, fileName, StringComparison.Ordinal))
+            ?? throw new FileNotFoundException("Server-owned character was not found.");
+        var path = Path.Combine(CharacterPath, character.FileName);
+        var backups = PeriodicCharacterBackup.Files(path).Select(backupPath =>
+        {
+            var info = new FileInfo(backupPath);
+            using var stream = File.OpenRead(backupPath);
+            return new ServerCharacterBackup(info.Name, info.LastWriteTimeUtc, info.Length,
+                Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant());
+        }).ToArray();
+        return new ServerCharacterBackupSet(character.CharacterName, character.Sha256,
+            state.Players.Any(player => SamePlatform(player.PlatformId, character.PlatformId)),
+            File.Exists(path + ".vsm-death-pending"), backups);
+    }
+
+    public async Task<ServerCharacterBackupSet> RestoreBackup(string fileName, string backupName, CharacterBackupRestore request, CancellationToken cancellationToken)
+    {
+        await _inventoryGate.WaitAsync(cancellationToken);
+        try
+        {
+            var current = Backups(fileName);
+            var character = List().Single(item => item.FileName == fileName);
+            if (current.Online) throw new InvalidOperationException("The player is online. Wait for them to disconnect before restoring a save.");
+            if (current.PendingDeath) throw new InvalidOperationException("This character has an unfinished death save. Reconcile the grave and inventory before restoring a backup.");
+            if (!string.Equals(current.Revision, request.Revision, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The character save changed. Refresh the backups before restoring.");
+            var backup = current.Backups.SingleOrDefault(item => string.Equals(item.FileName, backupName, StringComparison.Ordinal))
+                ?? throw new FileNotFoundException("Character backup was not found.");
+            if (!string.Equals(backup.Sha256, request.BackupSha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The backup changed. Refresh the backups before restoring.");
+            var path = Path.Combine(CharacterPath, fileName);
+            var backupPath = Path.Combine(PeriodicCharacterBackup.Folder(path), backup.FileName);
+            var bytes = await File.ReadAllBytesAsync(backupPath, cancellationToken);
+            if (bytes.Length > MaxProfileBytes) throw new InvalidDataException("Character backup exceeds the 2 MiB limit.");
+            ValidateNativeProfile(bytes);
+            if (!string.Equals(Convert.ToHexString(SHA256.HashData(bytes)), backup.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The backup changed during recovery. Refresh the backups.");
+            if (state.Players.Any(player => SamePlatform(player.PlatformId, character.PlatformId)))
+                throw new InvalidOperationException("The player joined during recovery. Wait for them to disconnect.");
+            if (File.Exists(path + ".vsm-death-pending"))
+                throw new InvalidOperationException("A death save began during recovery. Reconcile the grave before restoring.");
+            await using (var stream = File.OpenRead(path))
+                if (!string.Equals(Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)), current.Revision, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("The character save changed during recovery. Refresh the backups.");
+            var safetyDirectory = Path.Combine(CharacterPath, "vsm-admin-backups");
+            Directory.CreateDirectory(safetyDirectory);
+            var safetyPath = Path.Combine(safetyDirectory, $"{Path.GetFileNameWithoutExtension(path)}.{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss-fff}.{Guid.NewGuid():N}.fch");
+            File.Copy(path, safetyPath, false);
+            var temporary = Path.Combine(CharacterPath, $".vsm-restore-{Guid.NewGuid():N}.tmp");
+            try
+            {
+                await File.WriteAllBytesAsync(temporary, bytes, cancellationToken);
+                if (state.Players.Any(player => SamePlatform(player.PlatformId, character.PlatformId)))
+                    throw new InvalidOperationException("The player joined during recovery. Wait for them to disconnect.");
+                if (File.Exists(path + ".vsm-death-pending"))
+                    throw new InvalidOperationException("A death save began during recovery. Reconcile the grave before restoring.");
+                File.Move(temporary, path, true);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+            return Backups(fileName);
+        }
+        finally { _inventoryGate.Release(); }
+    }
+
     public async Task<ServerCharacterFile> Import(Stream source, string uploadName, string platformId, bool overwrite, CancellationToken cancellationToken)
     {
         if (state.Status != "stopped") throw new InvalidOperationException("Stop the Valheim server before importing a server character.");
@@ -192,5 +262,5 @@ public sealed partial class ServerCharacterService(IConfiguration configuration,
     [GeneratedRegex(@"^\d{17}$", RegexOptions.CultureInvariant)] private static partial Regex Steam64();
     [GeneratedRegex(@"^Steam_\d{17}$", RegexOptions.CultureInvariant)] private static partial Regex CanonicalSteam();
     [GeneratedRegex(@"^[\p{L}\p{N} -]{1,64}$", RegexOptions.CultureInvariant)] private static partial Regex CharacterName();
-    [GeneratedRegex(@"^(?<platform>Steam_\d{17})_(?<character>[^_]+)\.fch$", RegexOptions.CultureInvariant)] private static partial Regex ServerProfileName();
+    [GeneratedRegex(@"^(?<platform>[A-Za-z]+_[A-Za-z0-9]+)_(?<character>[^_]+)\.fch$", RegexOptions.CultureInvariant)] private static partial Regex ServerProfileName();
 }

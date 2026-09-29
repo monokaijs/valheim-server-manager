@@ -360,6 +360,23 @@ modApi.MapPost("/characters/{fileName}/inventory", async (string fileName, Chara
     catch (Exception error) when (error is FileNotFoundException or InvalidDataException or InvalidOperationException)
     { return Results.Conflict(new ProblemDetails { Title = "Character inventory edit failed", Detail = error.Message }); }
 }).RequireAntiforgery();
+modApi.MapGet("/characters/{fileName}/backups", (string fileName, ServerCharacterService characters) =>
+{
+    try { return Results.Ok(characters.Backups(fileName)); }
+    catch (Exception error) when (error is FileNotFoundException or InvalidDataException or InvalidOperationException)
+    { return Results.Conflict(new ProblemDetails { Title = "Character backups unavailable", Detail = error.Message }); }
+});
+api.MapPost("/characters/{fileName}/backups/{backupName}/restore", async (string fileName, string backupName, CharacterBackupRestore request, ServerCharacterService characters, AuditService audit, CancellationToken ct) =>
+{
+    try
+    {
+        var result = await characters.RestoreBackup(fileName, backupName, request, ct);
+        await audit.Write("server-character.backup.restore", fileName, "success", $"backup:{backupName};sha256:{request.BackupSha256}");
+        return Results.Ok(result);
+    }
+    catch (Exception error) when (error is FileNotFoundException or InvalidDataException or InvalidOperationException)
+    { return Results.Conflict(new ProblemDetails { Title = "Character backup recovery failed", Detail = error.Message }); }
+}).RequireAntiforgery();
 modApi.MapPost("/characters/import", async (HttpRequest request, ServerCharacterService characters, AuditService audit, CancellationToken ct) =>
 {
     if (!request.HasFormContentType) return Results.BadRequest(new ProblemDetails { Title = "multipart/form-data is required." });
@@ -442,7 +459,7 @@ api.MapPost("/mods/upload", async (HttpRequest request, ModService mods, Cancell
 }).RequireAntiforgery();
 api.MapGet("/downloads/plugin", (IConfiguration configuration) =>
 {
-    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManager-2.7.1.zip");
+    var path = Path.Combine(configuration["VSM_DATA_PATH"] ?? "/data/manager", "downloads", "ValheimServerManager-2.7.2.zip");
     return File.Exists(path) ? Results.File(path, "application/zip", Path.GetFileName(path)) : Results.NotFound();
 });
 api.MapPost("/mods/{id:guid}/enable", async (Guid id, ModService mods, CancellationToken ct) => { await mods.SetEnabled(id, true, ct); return Results.NoContent(); }).RequireAntiforgery();
