@@ -13,6 +13,7 @@
     <Compile Include="../../plugins/Shared/ClientHandshake.cs" Link="ClientHandshake.cs" />
     <Compile Include="../../plugins/Shared/ClientNotice.cs" Link="ClientNotice.cs" />
     <Compile Include="../../plugins/Shared/ConnectionPolicy.cs" Link="ConnectionPolicy.cs" />
+    <Compile Include="../../plugins/ValheimServerManager.Client/VoicePresentation.cs" Link="VoicePresentation.cs" />
     <Compile Include="../../plugins/Shared/VoiceCodec.cs" Link="VoiceCodec.cs" />
     <Compile Include="../../plugins/Shared/DeathFence.cs" Link="DeathFence.cs" />
     <Compile Include="../../plugins/Shared/PeriodicCharacterBackup.cs" Link="PeriodicCharacterBackup.cs" />

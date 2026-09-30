@@ -19,6 +19,7 @@ internal sealed class VoiceChatClient : IDisposable
     private float _voiceGateUntil;
     private float _lastSentAt;
     private readonly Dictionary<long, Playback> _playbacks = new();
+    internal bool MicrophoneUnavailable => ReadMicrophone == null || Time.unscaledTime < _retryAt;
     internal bool Transmitting => _microphoneClip != null && Time.unscaledTime - _lastSentAt < .2f;
 
     internal void Tick(bool active, VoiceChatMode mode, KeyCode pushToTalk, string inputDevice, float microphoneGain,
