@@ -32,6 +32,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Validate recovery inputs
         env:
@@ -124,3 +126,16 @@ jobs:
             echo "Digest: ${IMAGE_DIGEST}"
             echo 'Existing Git tags and Thunderstore packages were left unchanged.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-dockerhub:
+    name: Mirror fixed container to Docker Hub
+    if: ${{ vars.DOCKERHUB_ENABLED == 'true' }}
+    needs: publish-container
+    uses: ./.github/workflows/mirror-dockerhub.yml
+    with:
+      version: ${{ inputs.version }}
+      digest: ${{ needs.publish-container.outputs.digest }}
+      update_latest: ${{ inputs.update_latest }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
