@@ -15,6 +15,8 @@ WORKDIR /src
 COPY Directory.Build.props ValheimServerManager.slnx ./
 COPY bepinex-pack.version ./
 COPY src/ ./src/
+# The manager links source files from plugins/Shared in its project file.
+COPY plugins/Shared/ ./plugins/Shared/
 COPY --from=web-build /src/src/ValheimServerManager/wwwroot ./src/ValheimServerManager/wwwroot/
 RUN dotnet publish src/ValheimServerManager/ValheimServerManager.csproj -c Release -o /out --no-self-contained
 
