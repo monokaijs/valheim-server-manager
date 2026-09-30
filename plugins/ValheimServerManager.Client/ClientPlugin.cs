@@ -15,7 +15,7 @@ using ValheimServerManager.ClientSupport;
 namespace ValheimServerManager.Client;
 
 [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
-public sealed class ClientPlugin : BaseUnityPlugin
+public sealed partial class ClientPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager.client";
     public const string PluginName = "Valheim Server Manager Client";
@@ -128,8 +128,9 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void Update()
     {
+        TickMapHello();
         _notices.Tick(Player.m_localPlayer != null);
-        _voiceSettings?.Tick(Player.m_localPlayer != null);
+        _voiceSettings?.Tick(Player.m_localPlayer != null, _serverVoicePolicyReceived, _serverVoiceEnabled);
         if (Player.m_localPlayer == null) _discordRegion = null;
         else if (_serverRpc != null && !string.IsNullOrEmpty(_discordApplicationId) && Time.unscaledTime >= _nextDiscordRegionCheck)
         {
@@ -338,11 +339,22 @@ public sealed class ClientPlugin : BaseUnityPlugin
         if (Player.m_localPlayer == null) _notices.Draw();
         else
         {
-            if (_voiceChat?.Transmitting == true)
-                GUI.Box(new Rect(Screen.width - 185f, 20f, 165f, 28f), "Voice transmitting");
-            _voiceSettings?.Draw(_serverVoicePolicyReceived, _serverVoiceEnabled);
+            var ready = _serverVoiceEnabled && _serverRpc != null && _handshake.Ready && _modCatalog?.CanAcknowledge == true;
+            var state = VoicePresentation.State(_voiceEnabled.Value, _serverVoicePolicyReceived, _serverVoiceEnabled,
+                ready, _voiceChat?.MicrophoneUnavailable == true, _voiceChat?.Transmitting == true);
+            // HUD has no focusable/clickable controls and never captures gameplay input.
+            var scale = _voiceSettings?.HudScale ?? 1f;
+            var rect = new Rect(Screen.width - 68f * scale, 24f * scale, 44f * scale, 44f * scale);
+            var previous = GUI.color;
+            GUI.color = new Color(0f, 0f, 0f, .8f);
+            GUI.DrawTexture(new Rect(rect.x - 4f, rect.y - 4f, rect.width + 8f, rect.height + 8f), Texture2D.whiteTexture);
+            GUI.color = state == VoiceIndicatorState.Transmitting ? new Color(1f, .8f, .35f) : new Color(.95f, .92f, .83f);
+            GUI.DrawTexture(rect, VoiceIcon.Get(state));
+            GUI.color = previous;
         }
     }
+
+    internal void LogVoiceUiWarning(string message) => Logger.LogWarning(message);
 
     private void ApplyServerProfile()
     {
@@ -504,6 +516,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void ResetConnection()
     {
+        ResetMapConnection();
         _discordActivity?.SetActivity(null, null, null, 0, 0, null, null, null, null);
         _discordApplicationId = _discordServerName = _discordWorldName = _discordRegion = null;
         _discordDetailsTemplate = "{server}";
@@ -512,6 +525,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         _discordPlayerCount = 0;
         _discordMaxPlayers = 10;
         _nextDiscordRegionCheck = 0f;
+        _voiceSettings?.Close();
         _voiceChat?.Reset();
         _serverVoiceEnabled = _serverVoicePolicyReceived = false;
         _serverVoiceRange = 40f;
@@ -557,6 +571,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         _discordActivity?.Dispose();
         _voiceSettings?.Close();
         _voiceChat?.Dispose();
+        VoiceIcon.Dispose();
         _notices.Dispose();
         ResetConnection();
         Harmony.UnpatchID(PluginGuid);
@@ -571,6 +586,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         {
             if (Instance == null || __instance.IsServer() || __0?.m_rpc == null) return;
             Instance.AttachServerPeer(__0);
+            __0.m_rpc.Register<string, string>("VSM_Teleport", (rpc, requestId, json) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnMapTeleport(requestId, json); });
             __0.m_rpc.Register<bool>("VSM_InspectionPolicy", (rpc, required) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInspectionPolicy(required); });
             __0.m_rpc.Register<bool, int>("VSM_ServerPolicy", (rpc, required, timeout) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnServerPolicy(required, timeout); });
             __0.m_rpc.Register<bool, float>("VSM_VoicePolicy", (rpc, enabled, range) =>

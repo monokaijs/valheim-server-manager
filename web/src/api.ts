@@ -1,5 +1,9 @@
 let csrf = ''
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) { super(message) }
+}
+
 export async function ensureCsrf() {
   if (!csrf) csrf = (await request<{ token: string }>('/api/v1/auth/csrf')).token
   return csrf
@@ -14,7 +18,7 @@ export async function request<T = unknown>(path: string, options: RequestInit = 
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`
     try { const body = await response.json(); message = body.detail || body.title || message } catch { /* empty */ }
-    throw new Error(message)
+    throw new ApiError(message, response.status)
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>

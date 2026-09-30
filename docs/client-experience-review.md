@@ -32,7 +32,7 @@ Use a disposable mod-manager profile and a test server before publishing a relea
 
 1. Join vanilla, VSM local-character, and VSM server-character servers. Confirm that only the last waits for a profile, and that imported inventory, skills, and spawn data match the server save.
 2. Test a missing imported character, an invalid profile, a used character where a new one is required, and a delayed profile. Confirm one readable reason at the menu and no local-character fallback on a managed server.
-3. Connect with the bundled client. Confirm no mod button or F8 screen appears. Verify whitelist notices render once.
+3. Connect with the bundled client. Confirm no mod compatibility button or installer screen appears. F8 opens only voice settings during play. Verify whitelist notices render once.
 4. Test a kick and ban during play and while loading. Confirm the standard HUD shows the reason during play and the menu panel remains visible after disconnecting. Dismiss with mouse and Escape; check controller navigation and cursor behavior separately.
 5. Test one-line and maximum-length menu notices at 720p, 1080p, and 4K, including longer translated text. Check scrolling and contrast; confirm no Server Manager panel covers the in-game view.
 6. Test exact, missing, unlisted, and wrong optional package versions. Confirm only allowed profiles acknowledge the server requirement; rejected profiles receive a readable disconnect notice, no world entry, and no file changes. Confirm a vanilla or modified client without a receipt times out before world data is released.

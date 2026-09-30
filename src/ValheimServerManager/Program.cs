@@ -47,11 +47,14 @@ builder.Services.AddHttpClient("webhooks", client => client.Timeout = TimeSpan.F
 builder.Services.AddHttpClient("thunderstore", client => { client.Timeout = TimeSpan.FromMinutes(5); client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/1.0"); });
 builder.Services.AddHttpClient("steam", client => { client.Timeout = TimeSpan.FromSeconds(15); client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/1.0"); });
 builder.Services.AddHttpClient("manager-updates", client => { client.Timeout = TimeSpan.FromSeconds(20); client.DefaultRequestHeaders.UserAgent.ParseAdd("ValheimServerManager/1.6"); });
+builder.Services.AddSingleton<WorldMapState>();
+builder.Services.AddSingleton<WorldMapService>();
 builder.Services.AddSingleton<ServerState>();
 builder.Services.AddSingleton<MonitorService>();
 builder.Services.AddSingleton<InventoryInspectionService>();
 builder.Services.AddSingleton<EventBus>();
 builder.Services.AddSingleton<AgentGateway>();
+builder.Services.AddSingleton<IWorldMapCommands>(sp => sp.GetRequiredService<AgentGateway>());
 builder.Services.AddSingleton<AuditService>();
 builder.Services.AddSingleton<AccessListService>();
 builder.Services.AddScoped<ManagerRoleService>();
@@ -220,6 +223,12 @@ auth.MapGet("/steam/callback", async (SteamAuthService steam, ManagerRoleService
 auth.MapPost("/logout", async (HttpContext context) => { await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme); return Results.NoContent(); }).RequireAuthorization().RequireAntiforgery();
 
 var api = app.MapGroup("/api/v1").RequireAuthorization("Admin");
+api.MapGet("/world-map", (WorldMapState map, AgentGateway agent, HttpContext context) => { context.Response.Headers.CacheControl = "no-store"; return Results.Ok(map.Read(agent.IsConnected)); });
+api.MapGet("/world-map/terrain", (string worldId, WorldMapState map, HttpContext context) => { context.Response.Headers.CacheControl = "no-store"; var terrain = map.Terrain; return terrain is not null && terrain.WorldId == worldId ? Results.Ok(terrain) : Results.NotFound(); });
+api.MapGet("/world-map/tiles", (string worldId, WorldMapState map, HttpContext context) => { context.Response.Headers.CacheControl = "no-store"; return Results.Ok(new { keys = map.TileKeys(worldId), total = 64 }); });
+api.MapGet("/world-map/tiles/{x:int}/{y:int}", (string worldId, int x, int y, WorldMapState map, HttpContext context) => { context.Response.Headers.CacheControl = "no-store"; var tile = map.Tile(worldId, x, y); return tile is not null ? Results.Ok(tile) : Results.NotFound(); });
+api.MapPost("/world-map/players/{peerKey}/teleport", async (string peerKey, TeleportRequest request, WorldMapService map, HttpContext context) => Results.Ok(await map.Teleport(peerKey, request, context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "unknown"))).RequireAntiforgery();
+
 var modApi = app.MapGroup("/api/v1").RequireAuthorization();
 modApi.MapModFiles();
 api.MapGet("/roles", async (ManagerRoleService roles, CancellationToken ct) => Results.Ok(await roles.List(ct)));

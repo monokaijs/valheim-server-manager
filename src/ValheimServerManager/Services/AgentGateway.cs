@@ -11,7 +11,7 @@ namespace ValheimServerManager.Services;
 public sealed class AgentGateway(ServerState state, EventBus events, ClientModManifestService clientMods, JoinRequestService joinRequests,
     PluginRegistryService pluginRegistry, ServerMessageService serverMessages, DiscordActivitySettingsService discordActivity,
     ServerCharacterSettingsService characterSettings, VoiceChatSettingsService voiceSettings,
-    PlayerDirectoryService directory, IConfiguration config, ILogger<AgentGateway> logger)
+    PlayerDirectoryService directory, WorldMapState worldMap, IConfiguration config, ILogger<AgentGateway> logger) : IWorldMapCommands
 {
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
@@ -46,6 +46,7 @@ public sealed class AgentGateway(ServerState state, EventBus events, ClientModMa
         {
             if (ReferenceEquals(Interlocked.CompareExchange(ref _socket, null, socket), socket))
             {
+                worldMap.Invalidate();
                 await state.SetAgent(false);
                 await state.ReplacePlayers([]);
             }
@@ -136,6 +137,7 @@ public sealed class AgentGateway(ServerState state, EventBus events, ClientModMa
                         await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Unsupported protocol version", cancellationToken);
                         return;
                     }
+                    worldMap.BeginConnection(payload.TryGetProperty("mapProtocolVersion", out var mapProtocol) && mapProtocol.TryGetInt32(out var mapVersion) && mapVersion == 1);
                     Interlocked.Increment(ref _generation);
                     await state.SetAgent(true, String(payload, "version"), String(payload, "gameVersion"));
                     try { await PublishClientManifest(cancellationToken); }
@@ -157,6 +159,15 @@ public sealed class AgentGateway(ServerState state, EventBus events, ClientModMa
                         try { await directory.Record(parsed, cancellationToken); }
                         catch (Exception error) when (error is not OperationCanceledException) { logger.LogWarning(error, "Could not save player history."); }
                     }
+                    break;
+                case "mapFrame":
+                    worldMap.Update(payload.Deserialize<MapFrame>(JsonOptions) ?? throw new InvalidDataException("Missing map frame."));
+                    break;
+                case "mapTile":
+                    worldMap.SetTile(payload.Deserialize<MapTerrain>(JsonOptions) ?? throw new InvalidDataException("Missing map tile."));
+                    break;
+                case "mapTerrain":
+                    worldMap.SetTerrain(payload.Deserialize<MapTerrain>(JsonOptions) ?? throw new InvalidDataException("Missing terrain."));
                     break;
                 case "pluginRegistry":
                     try { await pluginRegistry.Update(payload, cancellationToken); }
