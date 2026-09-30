@@ -11,4 +11,5 @@
   <ItemGroup>
     <Content Include="../../bepinex-pack.version" Link="bepinex-pack.version" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup><Compile Include="../../plugins/Shared/MapCoordinates.cs" Link="MapCoordinates.cs" /></ItemGroup>
 </Project>

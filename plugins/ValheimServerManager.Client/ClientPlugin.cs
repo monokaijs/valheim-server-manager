@@ -15,7 +15,7 @@ using ValheimServerManager.ClientSupport;
 namespace ValheimServerManager.Client;
 
 [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
-public sealed class ClientPlugin : BaseUnityPlugin
+public sealed partial class ClientPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager.client";
     public const string PluginName = "Valheim Server Manager Client";
@@ -128,6 +128,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void Update()
     {
+        TickMapHello();
         _notices.Tick(Player.m_localPlayer != null);
         _voiceSettings?.Tick(Player.m_localPlayer != null);
         if (Player.m_localPlayer == null) _discordRegion = null;
@@ -504,6 +505,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
 
     private void ResetConnection()
     {
+        ResetMapConnection();
         _discordActivity?.SetActivity(null, null, null, 0, 0, null, null, null, null);
         _discordApplicationId = _discordServerName = _discordWorldName = _discordRegion = null;
         _discordDetailsTemplate = "{server}";
@@ -571,6 +573,7 @@ public sealed class ClientPlugin : BaseUnityPlugin
         {
             if (Instance == null || __instance.IsServer() || __0?.m_rpc == null) return;
             Instance.AttachServerPeer(__0);
+            __0.m_rpc.Register<string, string>("VSM_Teleport", (rpc, requestId, json) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnMapTeleport(requestId, json); });
             __0.m_rpc.Register<bool>("VSM_InspectionPolicy", (rpc, required) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInspectionPolicy(required); });
             __0.m_rpc.Register<bool, int>("VSM_ServerPolicy", (rpc, required, timeout) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnServerPolicy(required, timeout); });
             __0.m_rpc.Register<bool, float>("VSM_VoicePolicy", (rpc, enabled, range) =>

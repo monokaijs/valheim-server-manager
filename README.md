@@ -236,3 +236,7 @@ For the first release, the calculation starts from `thunderstore.toml`; each suc
 - World backups and multi-server/RBAC support are intentionally outside v1; mod rollback snapshots do not replace an external world-backup policy.
 
 This project is unofficial and is not affiliated with Iron Gate AB or Coffee Stain Publishing.
+
+## Admin world map
+
+The working-tree map implementation provides private live player positions, native terrain rendering and confirmed drag/coordinate teleport. See [runtime requirements, safety limits and validation](docs/admin-world-map.md). Teleport requires the updated companion client; this feature is not in the published 2.7.2 package.

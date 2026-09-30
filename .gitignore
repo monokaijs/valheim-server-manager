@@ -22,3 +22,6 @@ build/
 release/
 *.user
 *.suo
+
+web/test-results/
+web/playwright-report/

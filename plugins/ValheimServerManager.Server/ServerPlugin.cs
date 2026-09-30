@@ -24,7 +24,7 @@ using ValheimServerManager.VoiceSupport;
 namespace ValheimServerManager.Server;
 
 [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
-public sealed class ServerPlugin : BaseUnityPlugin
+public sealed partial class ServerPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager";
     public const string PluginName = "Server Manager";
@@ -148,6 +148,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
             try { action(); } catch (Exception ex) { Logger.LogError(ex); }
         if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
         TryRegisterClientRpcs();
+        TickWorldMap();
         if (!_pluginRegistryPublished && Time.unscaledTime > 2f) PublishPluginRegistry();
         if (Time.unscaledTime >= _nextSnapshot) { _nextSnapshot = Time.unscaledTime + 5f; SendSnapshot(); }
         if (Time.unscaledTime >= _nextDeathPoll) { _nextDeathPoll = Time.unscaledTime + 1f; PollDeaths(); }
@@ -190,9 +191,12 @@ public sealed class ServerPlugin : BaseUnityPlugin
                 using var socket = new ClientWebSocket();
                 socket.Options.SetRequestHeader("X-VSM-Agent-Token", Environment.GetEnvironmentVariable("VSM_AGENT_TOKEN") ?? _agentToken.Value);
                 await socket.ConnectAsync(new Uri(_managerUrl.Value), token);
-                Enqueue(new { type = "hello", payload = new { version = PluginVersion, gameVersion = global::Version.GetVersionString(), protocolVersion = 1 } });
+                Enqueue(new { type = "hello", payload = new { version = PluginVersion, gameVersion = global::Version.GetVersionString(), protocolVersion = 1, mapProtocolVersion = 1 } });
                 if (!string.IsNullOrWhiteSpace(_pluginRegistryMessage)) _outgoing.Enqueue(_pluginRegistryMessage);
                 var receive = ReceiveLoop(socket, token);
+                string sentMapFrame = null, sentMapTerrain = null;
+                var sentTiles = new HashSet<int>();
+                ConcurrentDictionary<int, string> sentTileSource = null;
                 while (socket.State == WebSocketState.Open && !token.IsCancellationRequested)
                 {
                     if (_outgoing.TryDequeue(out var message))
@@ -201,6 +205,16 @@ public sealed class ServerPlugin : BaseUnityPlugin
                         await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, token);
                     }
                     else await Task.Delay(50, token);
+                    var mapFrame = _mapFrameMessage;
+                    if (mapFrame != null && !ReferenceEquals(mapFrame, sentMapFrame))
+                    { await socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(mapFrame)), WebSocketMessageType.Text, true, token); sentMapFrame = mapFrame; }
+                    var mapTerrain = _mapTerrainMessage;
+                    if (mapTerrain != null && !ReferenceEquals(mapTerrain, sentMapTerrain))
+                    { await socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(mapTerrain)), WebSocketMessageType.Text, true, token); sentMapTerrain = mapTerrain; sentTiles.Clear(); }
+                    var tileSource = _mapTileMessages;
+                    if (!ReferenceEquals(tileSource, sentTileSource)) { sentTiles.Clear(); sentTileSource = tileSource; }
+                    var tile = tileSource.FirstOrDefault(value => !sentTiles.Contains(value.Key));
+                    if (tile.Value != null) { await socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(tile.Value)), WebSocketMessageType.Text, true, token); sentTiles.Add(tile.Key); }
                 }
                 await receive;
             }
@@ -308,6 +322,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
                     }
                     if (routed == 0) throw new InvalidOperationException("Notification could not be routed to any player.");
                     result = new { ok = true, recipients = routed, online = recipients.Length }; break;
+                case "player.teleport": BeginTeleport(requestId, data); return;
                 case "player.kick": result = Kick(data); break;
                 case "player.ban": result = Ban(data); break;
                 case "access.permitted.add": result = Access("m_permittedList", data, true, "whitelist.added"); break;
@@ -1002,6 +1017,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
             if (ReferenceEquals(rpc, peer.m_rpc)) OnVoiceFrame(peer, encoded);
         });
         RegisterDeathRpcs(znet, peer);
+        RegisterMapRpcs(peer);
     }
 
     private bool CanVoice(ZNetPeer peer) => _voiceEnabled && peer != null && peer.m_uid != 0 && peer.IsReady()
@@ -1072,6 +1088,7 @@ public sealed class ServerPlugin : BaseUnityPlugin
     {
         if (peer == null) return;
         _pendingPeerHellos.Remove(peer);
+        ForgetMapPeer(peer);
         _peerConnectedAt.Remove(peer);
         if (peer.m_rpc != null) _peersByRpc.Remove(peer.m_rpc);
         PeerInfoPatch.Discard(peer);

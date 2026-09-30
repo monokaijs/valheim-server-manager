@@ -2,7 +2,7 @@ import React, { FormEvent, useCallback, useEffect, useRef, useState } from "reac
 import { createRoot } from "react-dom/client"
 import { HubConnectionBuilder, LogLevel } from "@microsoft/signalr"
 import {
-  Activity, Backpack, Ban, Bell, Boxes, ChevronRight, CircleGauge, Command, Copy, Download,
+  Activity, Crosshair, Backpack, Ban, Bell, Boxes, ChevronRight, CircleGauge, Command, Copy, Download,
   FileUp, HeartPulse, HelpCircle, LogOut, MoreHorizontal, PackageCheck, PlugZap, Plus,
   RadioTower, RefreshCw, ScrollText, Search, Server, Settings, ShieldCheck,
   Check, KeyRound, Shield, Sparkles, SquareTerminal, Trash2, UserPlus, UserRoundSearch, Users, Webhook, Wifi, WifiOff, X,
@@ -37,6 +37,7 @@ import { ensureCsrf, post, remove, request } from "./api"
 import { ModFiles, ModFileManagerPage } from "@/components/mod-file-manager"
 import { LiveInspection, type PlayerDetails } from "@/components/live-inspection"
 import { MonitorDashboard } from "@/components/monitor-dashboard"
+import { WorldMapPage } from "@/components/world-map"
 import "./styles.css"
 
 type AuthState = { authenticated: boolean; userName?: string; steamId?: string; role?: "admin" | "mod" }
@@ -70,12 +71,13 @@ type SteamProfile = { steamId: string; name: string; avatarUrl: string; profileU
 type ServerMessages = { welcome: string; kick: string; ban: string; restart: string; whitelistRejected: string; companionRequired: string }
 type DiscordActivitySettings = { applicationId: string; detailsTemplate: string; stateTemplate: string; imageUrl: string }
 type ManagerUpdate = { currentVersion: string; latestVersion?: string; updateAvailable: boolean; automaticUpdates: boolean; hostUpdaterAvailable: boolean; state: string; targetVersion?: string; detail: string; lastCheckedAt?: string; releaseUrl?: string }
-type PageId = "files" | "overview" | "mods" | "players" | "webhooks" | "console" | "audit" | "settings"
+type PageId = "map" | "files" | "overview" | "mods" | "players" | "webhooks" | "console" | "audit" | "settings"
 
 const navigation: { id: PageId; label: string; icon: React.ElementType; hint: string }[] = [
   { id: "overview", label: "Monitor", icon: CircleGauge, hint: "Live charts and events" },
   { id: "files", label: "Files", icon: ScrollText, hint: "Configuration workspace" },
   { id: "mods", label: "Mods", icon: Boxes, hint: "Packages & updates" },
+  { id: "map", label: "World map", icon: Crosshair, hint: "Live positions & teleport" },
   { id: "players", label: "Players", icon: Users, hint: "Roster, requests, characters & access" },
   { id: "webhooks", label: "Webhooks", icon: Webhook, hint: "Event delivery" },
   { id: "console", label: "Console", icon: SquareTerminal, hint: "Live server output" },
@@ -84,6 +86,7 @@ const navigation: { id: PageId; label: string; icon: React.ElementType; hint: st
 ]
 
 const pageCopy: Record<PageId, { eyebrow: string; title: string; description: string }> = {
+  map: { eyebrow: "", title: "World map", description: "Live positions and safe teleport destinations." },
   files: { eyebrow: "Configuration workspace", title: "Files", description: "Safe, package-scoped configuration files." },
   overview: { eyebrow: "", title: "Monitor", description: "" },
   mods: { eyebrow: "Package control", title: "Mods", description: "Pinned packages with dependency-aware installs and safe rollback." },
@@ -782,7 +785,7 @@ function Dashboard({ auth }: { auth: AuthState }) {
   useEffect(() => { const timer = window.setInterval(() => { void request<AuthState>("/api/v1/auth/state").then(current => { if (!current.authenticated || current.role !== auth.role) window.location.reload() }).catch(() => {}) }, 30_000); return () => window.clearInterval(timer) }, [auth.role])
   useEffect(() => { const check = () => request<ManagerUpdate>("/api/v1/manager-update").then(update => { if (loadedManagerVersion.current && loadedManagerVersion.current !== update.currentVersion) window.location.reload(); loadedManagerVersion.current = update.currentVersion }).catch(() => {}); void check(); const timer = window.setInterval(check, 30_000); return () => window.clearInterval(timer) }, [])
   const logout = async () => { await post("/api/v1/auth/logout"); window.location.assign("/") }
-  const content = page === "files" ? <ModFileManagerPage onChanged={refreshStatus} /> : page === "overview" ? <MonitorDashboard status={status} refresh={refreshStatus} isAdmin={isAdmin} /> : page === "players" ? <PlayersPage isAdmin={isAdmin} /> : page === "mods" ? <ModsPage refreshStatus={refreshStatus} /> : page === "webhooks" ? <WebhooksPage /> : page === "console" ? <ConsolePage liveLogs={liveLogs} /> : page === "audit" ? <AuditPage /> : <SettingsPage currentSteamId={auth.steamId} />
+  const content = page === "map" && isAdmin ? <WorldMapPage /> : page === "files" ? <ModFileManagerPage onChanged={refreshStatus} /> : page === "overview" ? <MonitorDashboard status={status} refresh={refreshStatus} isAdmin={isAdmin} /> : page === "players" ? <PlayersPage isAdmin={isAdmin} /> : page === "mods" ? <ModsPage refreshStatus={refreshStatus} /> : page === "webhooks" ? <WebhooksPage /> : page === "console" ? <ConsolePage liveLogs={liveLogs} /> : page === "audit" ? <AuditPage /> : <SettingsPage currentSteamId={auth.steamId} />
   return <SidebarProvider style={{ "--sidebar-width": "calc(var(--spacing) * 72)", "--header-height": "calc(var(--spacing) * 12)" } as React.CSSProperties}>
     <AppSidebar variant="inset" items={visibleNavigation} activeId={page} onNavigate={id => setPage(id as PageId)} userName={userProfile?.name || `Steam ${auth.role || "user"}`} role={auth.role} steamId={auth.steamId} avatarUrl={userProfile?.avatarUrl} onlinePlayers={status.players} agentConnected={status.agentConnected} onLogout={logout} />
     <SidebarInset>
