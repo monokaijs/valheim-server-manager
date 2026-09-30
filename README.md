@@ -223,6 +223,8 @@ The smoke stack uses its own Compose project and volumes, waits for the plugin h
 
 The **Publish Manager Release** GitHub Actions workflow creates the Git tag and GitHub Release, publishes the matching Thunderstore package, and builds the x86-64 container image. Images are published to `ghcr.io/monokaijs/valheim-server-manager` with `X.Y.Z`, `vX.Y.Z`, and `latest` tags. The GHCR package must remain public so new installations and the host updater can pull it without registry credentials.
 
+If Thunderstore publication succeeded but the container failed, use **Recover container publication** with the existing version and the full SHA of its Docker packaging fix. It checks that the release tag is an ancestor, the version matches, and application/mod source is unchanged. It publishes only the container and leaves tags and Thunderstore untouched. Enable `update_latest` only for the newest stable release. After verifying the image, complete the existing GitHub Release if it is missing; do not rerun the full publisher for that version.
+
 The standalone **Publish to Thunderstore** workflow can also be manually triggered from the repository's Actions page. It downloads the current Valheim dedicated-server and BepInEx references, builds only the client plugin, packages it as **Server Manager** (`Creaton-Server_Manager` on Thunderstore), and publishes it to the Valheim community. Its BepInEx plugin ID is `dev.creaton.valheim-server-manager.client`.
 
 For the first release, the calculation starts from `thunderstore.toml`; each successful release records a `vX.Y.Z` Git tag that becomes the base for the next increment. The workflow authenticates with the repository's `THUNDERSTORE_TOKEN` Actions secret.
