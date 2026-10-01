@@ -19,7 +19,7 @@ public sealed partial class ClientPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "dev.creaton.valheim-server-manager.client";
     public const string PluginName = "Valheim Server Manager Client";
-    public const string PluginVersion = "2.7.3";
+    public const string PluginVersion = "2.7.4";
     private const string LegacyPluginGuid = "dev.monokai.valheim-server-manager.client";
     internal static ClientPlugin Instance { get; private set; }
     private ConfigEntry<bool> _allowInventory;
