@@ -51,6 +51,7 @@ public sealed partial class ClientPlugin : BaseUnityPlugin
     private bool _serverVoicePolicyReceived;
     private float _serverVoiceRange = 40f;
     private bool? _voiceAdvertised;
+    private string _voiceGate = "Waiting for server voice policy";
     private ZRoutedRpc _registeredRouter;
     private readonly ClientHandshake _handshake = new();
     private readonly NoticeOverlay _notices = new();
@@ -100,7 +101,7 @@ public sealed partial class ClientPlugin : BaseUnityPlugin
         _voiceInputDevice = Config.Bind("VoiceChat", "InputDevice", "", "Microphone device name. Empty uses the system default. Press F8 in game to choose a microphone.");
         _voiceVolume = Config.Bind("VoiceChat", "Volume", 1f, new ConfigDescription("Playback volume for other players.", new AcceptableValueRange<float>(0f, 2f)));
         _voiceMicrophoneGain = Config.Bind("VoiceChat", "MicrophoneGain", 1f, new ConfigDescription("Microphone gain before transmission.", new AcceptableValueRange<float>(0f, 3f)));
-        _voiceActivationThreshold = Config.Bind("VoiceChat", "ActivationThreshold", .015f, new ConfigDescription("RMS speech threshold for VoiceActivation mode.", new AcceptableValueRange<float>(.001f, .2f)));
+        _voiceActivationThreshold = Config.Bind("VoiceChat", "ActivationThreshold", .015f, new ConfigDescription("RMS speech threshold for VoiceActivation and speaking HUD in every mode.", new AcceptableValueRange<float>(.001f, .2f)));
         _voiceChat = new VoiceChatClient();
         _voiceSettings = new VoiceSettingsPanel(Config, _voiceEnabled, _voiceMode, _voicePushToTalk,
             _voiceInputDevice, _voiceVolume, _voiceMicrophoneGain, _voiceActivationThreshold);
@@ -180,20 +181,24 @@ public sealed partial class ClientPlugin : BaseUnityPlugin
             InvokeServer("VSM_ModReceipt", _modCatalog.Revision);
         }
         var voiceReady = _serverVoiceEnabled && _serverRpc != null && _handshake.Ready
-            && _modCatalog?.CanAcknowledge == true && Player.m_localPlayer != null;
+            && _modCatalog?.CanAcknowledge == true && _allowInventory.Value && Player.m_localPlayer != null;
         var voiceActive = voiceReady && _voiceEnabled.Value;
         if (_serverVoicePolicyReceived && _handshake.Ready && _voiceAdvertised != voiceActive)
         {
-            _voiceAdvertised = voiceActive;
-            InvokeServer("VSM_VoiceEnabled", voiceActive);
+            try { if (TrySendVoice("VSM_VoiceEnabled", voiceActive)) _voiceAdvertised = voiceActive; }
+            catch (Exception) { /* Retry participation next Update; voice diagnostics show pending state. */ }
         }
-        _voiceChat?.Tick(voiceActive, _voiceMode.Value, _voicePushToTalk.Value, _voiceInputDevice.Value,
+        _voiceChat?.Tick(voiceActive && _voiceAdvertised == true, _voiceMode.Value, _voicePushToTalk.Value, _voiceInputDevice.Value,
             _voiceMicrophoneGain.Value, _voiceActivationThreshold.Value, _voiceVolume.Value,
-            encoded =>
-            {
-                if (_serverRpc?.GetSocket() != null && _serverRpc.GetSocket().GetSendQueueSize() < 16 * 1024)
-                    InvokeServer("VSM_VoiceFrame", encoded);
-            });
+            encoded => TrySendVoice("VSM_VoiceFrame", encoded));
+        _voiceGate = !_voiceEnabled.Value ? "Voice muted locally" : !_serverVoicePolicyReceived ? "Waiting for server voice policy"
+            : !_serverVoiceEnabled ? "Voice disabled by server" : !_allowInventory.Value ? "Voice blocked: inventory consent required"
+            : !_handshake.Ready ? "Waiting for character/capability handshake"
+            : _modCatalog?.CanAcknowledge != true ? "Voice blocked: required mods not verified"
+            : Player.m_localPlayer == null ? "Waiting for local character" : _voiceAdvertised != true ? "Voice participation not sent; check connection"
+            : "Voice ready · server delivery requires another eligible player nearby";
+        _voiceSettings?.SetDiagnostics(_voiceGate, _voiceChat);
+        _voiceChat?.Diagnose(message => Logger.LogInfo(message), _voiceGate);
         if (_pendingCharacterProfile != null && Game.instance != null) ApplyServerProfile();
         if (_pendingFirstProfile && Game.instance != null) PrepareFirstProfile();
         if (_bootstrapPending && Player.m_localPlayer != null && Game.instance != null) AdoptCurrentProfile();
@@ -339,19 +344,29 @@ public sealed partial class ClientPlugin : BaseUnityPlugin
         if (Player.m_localPlayer == null) _notices.Draw();
         else
         {
-            var ready = _serverVoiceEnabled && _serverRpc != null && _handshake.Ready && _modCatalog?.CanAcknowledge == true;
+            var ready = _serverVoiceEnabled && _serverRpc != null && _handshake.Ready
+                && _modCatalog?.CanAcknowledge == true && _allowInventory.Value;
             var state = VoicePresentation.State(_voiceEnabled.Value, _serverVoicePolicyReceived, _serverVoiceEnabled,
                 ready, _voiceChat?.MicrophoneUnavailable == true, _voiceChat?.Transmitting == true);
-            // HUD has no focusable/clickable controls and never captures gameplay input.
+            if (!VoicePresentation.HudVisible(state, _voiceChat?.Speaking == true)) return;
+            // Noninteractive PNG; silence/mute/failure have no HUD element.
             var scale = _voiceSettings?.HudScale ?? 1f;
-            var rect = new Rect(Screen.width - 68f * scale, 24f * scale, 44f * scale, 44f * scale);
+            var rect = new Rect(Screen.width - 80f * scale, 24f * scale, 56f * scale, 44f * scale);
             var previous = GUI.color;
-            GUI.color = new Color(0f, 0f, 0f, .8f);
-            GUI.DrawTexture(new Rect(rect.x - 4f, rect.y - 4f, rect.width + 8f, rect.height + 8f), Texture2D.whiteTexture);
-            GUI.color = state == VoiceIndicatorState.Transmitting ? new Color(1f, .8f, .35f) : new Color(.95f, .92f, .83f);
-            GUI.DrawTexture(rect, VoiceIcon.Get(state));
+            GUI.color = new Color(1f, .8f, .35f);
+            var icon = VoiceIcon.Get(_voiceChat.WaveCount);
+            if (icon != null) GUI.DrawTexture(rect, icon);
             GUI.color = previous;
         }
+    }
+
+    // True means RPC.Invoke accepted a frame locally, not remote delivery/audibility.
+    private bool TrySendVoice(string method, object payload)
+    {
+        var socket = _serverRpc?.GetSocket();
+        if (socket == null || !socket.IsConnected() || socket.GetSendQueueSize() >= 16 * 1024) return false;
+        _serverRpc.Invoke(method, payload);
+        return true;
     }
 
     internal void LogVoiceUiWarning(string message) => Logger.LogWarning(message);
@@ -599,8 +614,9 @@ public sealed partial class ClientPlugin : BaseUnityPlugin
             });
             __0.m_rpc.Register<string>("VSM_VoiceFrame", (rpc, encoded) =>
             {
-                if (!ReferenceEquals(rpc, Instance?._serverRpc) || Instance._voiceEnabled?.Value != true
-                    || !Instance._serverVoiceEnabled || Player.m_localPlayer == null) return;
+                if (!ReferenceEquals(rpc, Instance?._serverRpc)) return;
+                if (Instance._voiceEnabled?.Value != true || !Instance._serverVoiceEnabled || Player.m_localPlayer == null)
+                { Instance._voiceChat?.RejectReceive(); return; }
                 Instance._voiceChat?.Receive(encoded, Instance._serverVoiceRange, Instance._voiceVolume.Value);
             });
             __0.m_rpc.Register<string>("VSM_InventoryRequest", (rpc, requestId) => { if (ReferenceEquals(rpc, Instance?._serverRpc)) Instance.OnInventoryRequest(__0.m_uid, requestId); });

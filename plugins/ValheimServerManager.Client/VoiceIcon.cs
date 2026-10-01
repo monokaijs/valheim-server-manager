@@ -1,49 +1,66 @@
 using System;
+using System.IO;
 using UnityEngine;
 
 namespace ValheimServerManager.Client;
 
-// Original vector-like silhouettes rasterized once. No bundled/extracted game artwork.
+// Transparent original PNGs are embedded in the companion DLL and loaded once.
 internal static class VoiceIcon
 {
-    private static readonly Texture2D[] Textures = new Texture2D[4];
-    internal static Texture2D Get(VoiceIndicatorState state)
+    // Resolve byte[] overload explicitly: Unity 6 also has a Span overload that
+    // cannot be referenced by this net48 assembly (same constraint as GetData).
+    private static readonly Func<Texture2D, byte[], bool, bool> LoadPng = CreateLoader();
+    private static Func<Texture2D, byte[], bool, bool> CreateLoader()
     {
-        var index = (int)state;
-        if (Textures[index] != null) return Textures[index];
-        const int size = 96;
-        var texture = new Texture2D(size, size, TextureFormat.RGBA32, false) { name = "VSM microphone " + state, hideFlags = HideFlags.HideAndDontSave };
-        var pixels = new Color[size * size];
-        for (var y = 0; y < size; y++)
-        for (var x = 0; x < size; x++)
+        try
         {
-            // Coordinates use a top-left origin for the icon path.
-            var py = size - 1 - y;
-            var capsule = x >= 34 && x <= 54 && py >= 18 && py <= 49
-                || Distance(x, py, 44, 18) <= 10 || Distance(x, py, 44, 49) <= 10;
-            var arc = py >= 43 && py <= 68 && Math.Abs(Distance(x, py, 44, 43) - 24) <= 2.5f;
-            var stand = x >= 41 && x <= 47 && py >= 68 && py <= 81 || x >= 30 && x <= 58 && py >= 79 && py <= 84;
-            var extra = state == VoiceIndicatorState.Muted && Segment(x, py, 14, 16, 76, 84, 4)
-                || state == VoiceIndicatorState.Transmitting && (Segment(x, py, 76, 30, 83, 37, 2.5f)
-                    || Segment(x, py, 83, 37, 83, 55, 2.5f) || Segment(x, py, 83, 55, 76, 62, 2.5f))
-                || state == VoiceIndicatorState.Unavailable && (x >= 76 && x <= 82 && py >= 21 && py <= 48
-                    || Distance(x, py, 79, 60) <= 4);
-            // Knock out a channel around the muted slash for non-color recognition.
-            var knockout = state == VoiceIndicatorState.Muted && Segment(x, py, 14, 16, 76, 84, 7);
-            pixels[y * size + x] = extra || (capsule || arc || stand) && !knockout ? Color.white : Color.clear;
+            var method = typeof(ImageConversion).GetMethod("LoadImage", new[] { typeof(Texture2D), typeof(byte[]), typeof(bool) });
+            return method == null ? null : (Func<Texture2D, byte[], bool, bool>)Delegate.CreateDelegate(typeof(Func<Texture2D, byte[], bool, bool>), method);
         }
-        texture.SetPixels(pixels); texture.Apply(false, true); Textures[index] = texture;
-        return texture;
+        catch (Exception) { return null; }
     }
-    private static float Distance(float x, float y, float cx, float cy) => Mathf.Sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
-    private static bool Segment(float x, float y, float ax, float ay, float bx, float by, float radius)
+    private static readonly Texture2D[] Textures = new Texture2D[4];
+    private static readonly Sprite[] Sprites = new Sprite[4];
+    private static readonly bool[] Attempted = new bool[4];
+    internal static Texture2D Get(int waves)
     {
-        var t = Mathf.Clamp01(((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) * (bx - ax) + (by - ay) * (by - ay)));
-        return Distance(x, y, ax + t * (bx - ax), ay + t * (by - ay)) <= radius;
+        var index = Math.Max(0, Math.Min(3, waves));
+        if (Attempted[index]) return Textures[index];
+        Attempted[index] = true;
+        Texture2D texture = null;
+        try
+        {
+            using var stream = typeof(VoiceIcon).Assembly.GetManifestResourceStream(
+                "ValheimServerManager.Client.Assets.Voice.microphone-" + index + ".png");
+            if (stream == null) throw new InvalidDataException("Embedded voice PNG missing");
+            using var bytes = new MemoryStream(); stream.CopyTo(bytes);
+            texture = new Texture2D(2, 2, TextureFormat.RGBA32, false)
+            { name = "VSM voice PNG " + index, hideFlags = HideFlags.HideAndDontSave, filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
+            if (LoadPng == null || !LoadPng(texture, bytes.ToArray(), true)) throw new InvalidDataException("Embedded voice PNG invalid");
+            Textures[index] = texture;
+        }
+        catch (Exception error)
+        {
+            if (texture != null) UnityEngine.Object.Destroy(texture);
+            ClientPlugin.Instance?.LogVoiceUiWarning("Voice icon could not load (" + error.GetType().Name + "); reinstall the companion package.");
+        }
+        return Textures[index];
+    }
+    internal static Sprite GetSprite(int waves)
+    {
+        var index = Math.Max(0, Math.Min(3, waves));
+        var texture = Get(index);
+        if (Sprites[index] == null && texture != null)
+            Sprites[index] = Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height), new Vector2(.5f, .5f));
+        return Sprites[index];
     }
     internal static void Dispose()
     {
         for (var index = 0; index < Textures.Length; index++)
-        { if (Textures[index] != null) UnityEngine.Object.Destroy(Textures[index]); Textures[index] = null; }
+        {
+            if (Sprites[index] != null) UnityEngine.Object.Destroy(Sprites[index]);
+            if (Textures[index] != null) UnityEngine.Object.Destroy(Textures[index]);
+            Sprites[index] = null; Textures[index] = null; Attempted[index] = false;
+        }
     }
 }

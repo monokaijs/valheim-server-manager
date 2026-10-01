@@ -1,40 +1,63 @@
 # Companion voice UI
 
-The companion HUD now uses a microphone icon rather than a transmitting text box.
+The gameplay HUD is hidden while idle, muted, unavailable, or below the configured
+speech threshold. It appears only after a locally accepted voice send and recent
+captured speech. Push to talk also requires the configured key; voice activation
+retains its 300 ms send hangover, while the HUD has a shorter 120 ms speech release.
+Open microphone still sends continuously, including silence; silence has no HUD.
 
-| Icon | Meaning |
-| --- | --- |
-| Microphone with slash | Voice muted locally or disabled by the server |
-| Plain microphone | Voice ready; push-to-talk may still have the microphone closed |
-| Microphone with outgoing waves | Recent voice frames transmitted |
-| Microphone with exclamation mark | Server/session not ready, or microphone startup/read failed |
+Four original transparent PNGs (`Assets/Voice/microphone-0.png` through `-3.png`)
+are embedded in the client DLL. The settings header can use the plain microphone;
+the HUD uses one, two, or three waves according to smoothed input RMS relative to
+the speech threshold. Attack/release smoothing, speech hysteresis and wave-level
+dead bands limit flicker. Textures/sprites load once and are destroyed on unload.
+There is no runtime procedural icon artwork or fallback icon. Missing/invalid PNGs
+produce a bounded warning with a reinstall action. The loader resolves Unity 6's
+`byte[]` overload explicitly for net48 compatibility. The original assets can be
+regenerated with `python3 scripts/generate-voice-icons.py` (Pillow required).
 
-The shapes distinguish states without depending on color. HUD textures are original procedural artwork, generated once per state and destroyed when the plugin unloads. Drawing the HUD does not capture input or open a microphone. The microphone failure indicator reflects failures observed by the audio client; it does not probe/open an idle push-to-talk microphone merely to test availability.
+F8 opens a 620 × 814 uGUI panel built from installed Valheim panel/button/slider
+resources, without instantiating native Settings. Only the title uses the menu's
+Valheim heading font/material. Body text, button labels, help and diagnostics use
+a dynamic OS Arial/Helvetica/Liberation Sans/DejaVu Sans font, with a distinct
+regular native font or suitable TMP default as fallback. Viking/Norse fonts and the heading
+font are excluded from body fallback. Owned font atlas/material/source resources
+are released on close; game-owned fonts are retained. Labels disable rich text,
+so device names are displayed as text.
 
-F8 opens voice settings during gameplay when another menu/chat/input dialog is not active. The panel uses Unity uGUI with Valheim's installed settings panel image, menu button sprites and state colors, TMP font/material, slider artwork, and UIGroupHandler. No game assets are copied into the plugin or repository, and the native Settings prefab is never instantiated. Missing required native resources or an unavailable input guard prevent the panel from opening and produce a BepInEx warning.
+The input meter reflects capture already authorized by the selected mode. Opening
+settings never opens an idle push-to-talk microphone. A marker shows the speech
+threshold; clipping turns the meter red and suggests reducing gain. Capture
+failures and connection/mod/consent gates have visible status. Separate counts
+show captured, locally queued, skipped and received frames. Transport/output status
+helps distinguish a closed input, failed send, no incoming voice, invalid packets
+and failed output. A local queue success or consumed output sample does not prove
+remote delivery or audible hardware output. Anonymous server relay diagnostics
+explain eligibility rejection, recipient exclusion and no matching recipient.
 
-Mouse and keyboard input work through the native event system. The focused controls have explicit Up/Down navigation; native sliders respond to Left/Right. Escape, controller B/Back, the Close button, and F8 close the panel. Escape/B first cancel key binding when binding is active. Mode and microphone buttons cycle their choices, so the device list cannot overflow the panel. Bindings retain the existing keyboard/mouse key configuration; controller voice binding was not introduced.
+The panel scales to fit the canvas; long gate/capture/playback statuses wrap.
+Buttons retain explicit Up/Down focus order; sliders retain Left/Right adjustment.
+F8, Escape, controller B and Close exit. Escape/B first cancel key binding. Other
+native modals/chat prevent opening. A full-screen veil intercepts clicks only
+while open. The native input guard blocks gameplay while open and through closing.
+Cursor/focus restoration runs exactly once, including partial-open/teardown
+failure. Disconnect, scene loss and unload close the panel. Reopening creates one
+new panel and control set. None of these behaviors have been exercised in a live
+Valheim session by this change.
 
-The panel inherits the game's canvas scale and fits inside the canvas at lower resolutions/large UI scales. The HUD follows the canvas scale with a readability floor. The full-screen dim image intercepts clicks only while open. Menu visibility guards prevent gameplay movement/camera input while the panel is open and through its closing frame. Cursor and previous selection are restored on close. Disconnect/reset, scene loss and plugin unload close and destroy the panel; reopening builds one new panel and does not duplicate listeners.
+## Validation
 
-Voice modes, gain/volume/threshold ranges, microphone selection configuration, server policy, consent advertisement, encoding, relay and proximity playback are unchanged. Push-to-talk opens the microphone only while its configured key is held. Voice activation and open microphone retain their existing during-play behavior, including while settings is open.
+Production audio/presentation code is linked into synthetic Unity tests for HUD
+visibility, silent PTT/open mic, three loudness levels, hysteresis, stale capture,
+clipping, fit, font fallback policy, modal ownership restoration and audio error
+paths. Pure lifecycle tests verify restoration callbacks, not real game focus.
+Both plugins compile against installed Mac Valheim Unity 6000.0.75f1 assemblies.
+Embedded resource inspection verifies all four packaged PNGs match their sources.
 
-## Validation and review artifact
-
-- Client compiles against installed Mac Valheim assemblies; package build compatibility is also checked using dedicated-server managed assemblies. Server plugin compiles after the shared input guard change.
-- `dotnet test ValheimServerManager.slnx` includes indicator policy/readiness/failure precedence and panel fit at 1080p, 720p, 800×600, 640×360 and a 200% UI-scale canvas.
-- `scripts/render-voice-ui-review.mjs` renders `artifacts/voice-ui-review.png` with the existing Playwright dependency. It is a before/after **layout fixture**, with approximate native appearance and original icon geometry, not an in-game capture or proof of native prefab binding/input behavior. Run with `VSM_TEST_BROWSER` set to an existing Chromium executable if Playwright's default is unavailable.
-- No Valheim session, microphone recording, live multiplayer, player teleport or world/character modification was used for this change.
-
-## Remaining in-game acceptance checks
-
-Use an authorized disposable local profile/session before release:
-
-1. Verify the installed game's settings prefab supplies the expected panel image, font, buttons and slider resources; check BepInEx for resource/input-guard warnings.
-2. Inspect all four HUD shapes over bright snow, dark forest and HUD notifications, including 720p/1080p/4K and UI scales 75–200%.
-3. Open/close with F8 repeatedly. Click outside the panel, bind/cancel a key, close with Escape/B, and verify camera/movement and existing menus do not receive the closing action. Confirm normal gameplay input resumes after close.
-4. Navigate each control with the controller, wrap Up/Down, adjust sliders with Left/Right, activate buttons and return focus after closing. Check keyboard/mouse switches without losing selection.
-5. Refresh/unplug microphones while open, cycle back to system default, and retain the configured unavailable device until explicitly changed. Verify the audio client's existing retry/permission handling and all three modes.
-6. Disconnect/reconnect and change scenes with the panel open. Confirm no leftover input guard, duplicate panel, duplicate listeners or stale cursor/focus state.
-
-Actual native resource binding, in-game controller behavior and microphone hardware/permissions remain unverified until those checks run. No release or deployment is performed by this work.
+`scripts/render-voice-ui-review.mjs` renders a **layout fixture**, with actual PNGs,
+production coordinates, regular body text and approximate game artwork/title font.
+It is not an in-game screenshot or evidence of native resource/controller binding.
+`artifacts/voice-png-pixel-review.png` shows the PNGs at source and HUD scale against
+bright/dark backgrounds. Native font rendering, input focus, controller behavior,
+low-resolution readability and audible voice require an approved disposable game
+session. No release, live DLL replacement or deployment is performed here.

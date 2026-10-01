@@ -26,10 +26,22 @@ internal sealed class VoiceSettingsPanel
     private Canvas _gameCanvas;
     internal float HudScale { get; private set; } = 1f;
     private TMP_Text _fontTemplate, _status, _enableLabel, _modeLabel, _modeHelp, _deviceLabel, _deviceHelp, _keyLabel;
+    private TMP_FontAsset _bodyFont;
+    private Font _ownedBodySource;
+    private bool _ownsBodyFont;
+    private TMP_Text _captureStatus, _transportStatus, _playbackStatus, _meterText, _flowCounts;
+    private RectTransform _thresholdMarker;
+    private RectTransform _meterFill;
+    private Image _meterImage, _voiceImage;
+    private VoiceChatClient _audio;
+    private string _gateStatus = "Waiting for server voice policy";
+    internal void SetDiagnostics(string gate, VoiceChatClient audio) { _gateStatus = gate; _audio = audio; }
     private Button _buttonTemplate;
     private Slider _sliderTemplate;
     private Image _panelTemplate;
-    private bool _bindingKey, _previousCursorVisible, _ownsModal;
+    private bool _bindingKey, _previousCursorVisible;
+    private readonly VoiceUiLifetime _lifetime = new();
+    private bool _ownsModal => _lifetime.IsOpen;
     private CursorLockMode _previousCursorLock;
     private string[] _devices = Array.Empty<string>();
     private float _nextDeviceRefresh;
@@ -80,10 +92,23 @@ internal sealed class VoiceSettingsPanel
             _nextDeviceRefresh = Time.unscaledTime + 2f;
             try { _devices = Microphone.devices ?? Array.Empty<string>(); } catch { _devices = Array.Empty<string>(); }
         }
-        _status.text = policyReceived ? serverEnabled ? "Proximity voice · F8 / Esc / B to close" : "Voice is disabled by this server" : "Waiting for the server voice policy";
+        _status.text = _gateStatus;
+        var meter = _audio?.Level.Meter(Time.unscaledTime) ?? 0f;
+        _meterFill.sizeDelta = new Vector2(556 * meter, 10);
+        _thresholdMarker.anchoredPosition = new Vector2(556 * Mathf.Clamp01(_activationThreshold.Value / .25f), 2);
+        var clipping = meter > 0 && _audio?.Level.Clipping == true;
+        _meterImage.color = clipping ? new Color(1f, .35f, .22f) : new Color(.5f, .82f, .65f);
+        _meterText.text = clipping ? "Clipping · reduce gain" : meter > 0 ? "Input level" : "Input idle / silent";
+        _voiceImage.sprite = VoiceIcon.GetSprite(_audio?.WaveCount ?? 0);
+        _voiceImage.enabled = _voiceImage.sprite != null;
+        _captureStatus.text = _audio?.CaptureStatus ?? "Microphone idle";
+        _transportStatus.text = _audio?.TransportStatus ?? "No frames sent";
+        _flowCounts.text = _audio == null ? "" : $"Captured {_audio.CapturedFrames} · queued {_audio.SentFrames} · skipped {_audio.SendDrops} · received {_audio.ReceivedFrames}";
+        _playbackStatus.text = _audio == null ? "No voice received" : _audio.PlaybackStatus +
+            (_audio.OutputSamples > 0 ? " · output samples consumed" : "");
         _enableLabel.text = _enabled.Value ? "Voice chat: Enabled" : "Voice chat: Muted";
         _modeLabel.text = _mode.Value switch { VoiceChatMode.PushToTalk => "Push to talk  ›", VoiceChatMode.VoiceActivation => "Voice activation  ›", _ => "Open microphone  ›" };
-        _modeHelp.text = _mode.Value switch { VoiceChatMode.PushToTalk => "Microphone opens only while your key is held.", VoiceChatMode.VoiceActivation => "Microphone stays open; sends speech above the threshold.", _ => "Microphone stays open and transmits during play." };
+        _modeHelp.text = _mode.Value switch { VoiceChatMode.PushToTalk => "Hold your key to send. The input meter follows capture.", VoiceChatMode.VoiceActivation => "Sends speech above the threshold; brief release prevents cuts.", _ => "Sends continuously. The HUD appears only for speech." };
         _deviceLabel.text = (string.IsNullOrEmpty(_inputDevice.Value) ? "System default" : _inputDevice.Value) + "  ›";
         _deviceHelp.text = _devices.Length == 0 ? "No microphones detected. Check system permissions."
             : !string.IsNullOrEmpty(_inputDevice.Value) && Array.IndexOf(_devices, _inputDevice.Value) < 0 ? "Selected microphone unavailable. Choose another device." : "Select to cycle through available microphones.";
@@ -107,8 +132,18 @@ internal sealed class VoiceSettingsPanel
         // All required resources come from the installed game, not shipped copies.
         if (canvas == null || _fontTemplate == null || _sliderTemplate == null || _panelTemplate == null)
         { ClientPlugin.Instance?.LogVoiceUiWarning("Voice settings could not find the native game UI resources."); return; }
+        ResolveBodyFont(menu.m_settingsPrefab);
+        if (_bodyFont == null) { ClientPlugin.Instance?.LogVoiceUiWarning("Voice settings needs a readable body font; native/OS font fallback failed."); ReleaseBodyFont(); return; }
         _previousCursorLock = Cursor.lockState; _previousCursorVisible = Cursor.visible;
         _previousSelection = EventSystem.current?.currentSelectedGameObject;
+        _lifetime.Begin(() =>
+        {
+            NoticeInputGuard.NativeModal = false;
+            Cursor.lockState = _previousCursorLock; Cursor.visible = _previousCursorVisible;
+            EventSystem.current?.SetSelectedGameObject(_previousSelection != null && _previousSelection.activeInHierarchy ? _previousSelection : null);
+            _previousSelection = null;
+            PlayerController.SetTakeInputDelay(.1f);
+        });
         _canvasRect = canvas.GetComponent<RectTransform>();
         _root = new GameObject("VSM Voice Settings", typeof(RectTransform));
         _root.SetActive(false);
@@ -118,31 +153,80 @@ internal sealed class VoiceSettingsPanel
         _root.AddComponent<GraphicRaycaster>();
         _root.AddComponent<CanvasGroup>();
         var veil = _root.AddComponent<Image>(); veil.color = new Color(0, 0, 0, .65f);
-        _panel = Rect("Panel", _root.transform, 0, 0, 620, 680);
+        _panel = Rect("Panel", _root.transform, 0, 0, VoicePresentation.PanelWidth, VoicePresentation.PanelHeight);
         _panel.anchorMin = _panel.anchorMax = _panel.pivot = new Vector2(.5f, .5f); _panel.anchoredPosition = Vector2.zero;
         CopyImage(_panel.gameObject.AddComponent<Image>(), _panelTemplate);
-        Label("Voice chat", 32, 24, 556, 40, 32, new Color(1f, .79f, .35f));
-        _status = Label("", 32, 72, 556, 26, 18);
-        _enableLabel = Button("", 32, 110, 556, () => _enabled.Value = !_enabled.Value);
-        Label("Voice mode", 32, 170, 180, 40, 22);
-        _modeLabel = Button("", 228, 170, 360, () => _mode.Value = (VoiceChatMode)(((int)_mode.Value + 1) % 3));
-        _modeHelp = Label("", 32, 216, 556, 30, 17);
-        Label("Microphone", 32, 252, 556, 24, 22);
-        _deviceLabel = Button("", 32, 280, 556, CycleDevice);
-        _deviceHelp = Label("", 32, 326, 556, 24, 16);
-        Label("Push to talk key", 32, 360, 180, 40, 22);
-        _keyLabel = Button("", 228, 360, 360, () => { _bindingKey = true; _bindingStartedFrame = Time.frameCount; });
-        AddSlider("Playback volume", _volume, 0, 2, "0.0", 420);
-        AddSlider("Microphone gain", _microphoneGain, 0, 3, "0.0", 482);
-        AddSlider("Activation threshold", _activationThreshold, .001f, .2f, "0.000", 544);
-        Button("Close", 200, 618, 220, Close);
+        Label("Voice chat", 32, 20, 490, 44, 32, new Color(1f, .79f, .35f), heading: true);
+        var iconRect = Rect("PNG microphone", _panel, 536, 22, 52, 42);
+        _voiceImage = iconRect.gameObject.AddComponent<Image>(); _voiceImage.raycastTarget = false;
+        _voiceImage.preserveAspect = true; _voiceImage.color = new Color(1f, .79f, .35f);
+        _status = Label("", 32, 66, 556, 40, 16);
+        _status.textWrappingMode = TextWrappingModes.Normal;
+        _enableLabel = Button("", 32, 114, 556, () => _enabled.Value = !_enabled.Value);
+        Label("Voice mode", 32, 166, 180, 40, 20);
+        _modeLabel = Button("", 228, 166, 360, () => _mode.Value = (VoiceChatMode)(((int)_mode.Value + 1) % 3));
+        _modeHelp = Label("", 32, 210, 556, 28, 16);
+        Label("Microphone", 32, 246, 556, 24, 20);
+        _deviceLabel = Button("", 32, 274, 556, CycleDevice);
+        _deviceHelp = Label("", 32, 320, 556, 24, 15);
+        _meterText = Label("", 32, 350, 556, 22, 15);
+        var meterBack = Rect("Input meter", _panel, 32, 376, 556, 10);
+        var meterBackImage = meterBack.gameObject.AddComponent<Image>();
+        meterBackImage.color = new Color(.12f, .16f, .17f); meterBackImage.raycastTarget = false;
+        _meterFill = Rect("Level", meterBack, 0, 0, 0, 10);
+        _meterImage = _meterFill.gameObject.AddComponent<Image>(); _meterImage.raycastTarget = false;
+        _thresholdMarker = Rect("Speech threshold marker", meterBack, 0, -2, 2, 14);
+        var thresholdImage = _thresholdMarker.gameObject.AddComponent<Image>();
+        thresholdImage.color = new Color(1f, .79f, .35f); thresholdImage.raycastTarget = false;
+        _captureStatus = Label("", 32, 388, 556, 40, 15);
+        _captureStatus.textWrappingMode = TextWrappingModes.Normal;
+        Label("Push to talk key", 32, 432, 180, 40, 20);
+        _keyLabel = Button("", 228, 432, 360, () => { _bindingKey = true; _bindingStartedFrame = Time.frameCount; });
+        AddSlider("Playback volume", _volume, 0, 2, "0.0", 482);
+        AddSlider("Microphone gain", _microphoneGain, 0, 3, "0.0", 542);
+        AddSlider("Speech threshold", _activationThreshold, .001f, .2f, "0.000", 602);
+        _flowCounts = Label("", 32, 662, 556, 20, 14);
+        _transportStatus = Label("", 32, 686, 556, 20, 15);
+        _playbackStatus = Label("", 32, 710, 556, 36, 15);
+        _playbackStatus.textWrappingMode = TextWrappingModes.Normal;
+        Button("Close · F8 / Esc / B", 170, 756, 280, Close);
         WireNavigation();
         var group = _root.AddComponent<UIGroupHandler>(); group.m_groupPriority = 1000; group.m_defaultElement = _controls[0].gameObject;
         _nextDeviceRefresh = 0;
-        _ownsModal = true;
         NoticeInputGuard.NativeModal = true;
         _root.SetActive(true);
         EventSystem.current?.SetSelectedGameObject(_controls[0].gameObject);
+    }
+
+    private void ResolveBodyFont(GameObject settings)
+    {
+        // System font keeps body text readable even when every native template is decorative.
+        try
+        {
+            _ownedBodySource = Font.CreateDynamicFontFromOSFont(new[] { "Arial", "Helvetica", "Liberation Sans", "DejaVu Sans" }, 18);
+            if (_ownedBodySource != null)
+            { _bodyFont = TMP_FontAsset.CreateFontAsset(_ownedBodySource); _ownsBodyFont = _bodyFont != null; }
+        }
+        catch (Exception) { /* Try the TMP default after an unavailable system font. */ }
+        // When OS fonts are unavailable, prefer a distinct regular native font.
+        if (_bodyFont == null) foreach (var text in settings.GetComponentsInChildren<TMP_Text>(true))
+            if (text.font != null && text.font != _fontTemplate.font && VoicePresentation.ReadableFont(text.font.name))
+            { _bodyFont = text.font; return; }
+        if (_bodyFont == null && TMP_Settings.defaultFontAsset != _fontTemplate.font
+            && TMP_Settings.defaultFontAsset != null && VoicePresentation.ReadableFont(TMP_Settings.defaultFontAsset.name))
+            _bodyFont = TMP_Settings.defaultFontAsset;
+    }
+
+    private void ReleaseBodyFont()
+    {
+        if (_ownsBodyFont && _bodyFont != null)
+        {
+            foreach (var texture in _bodyFont.atlasTextures) if (texture != null) UnityEngine.Object.Destroy(texture);
+            if (_bodyFont.material != null) UnityEngine.Object.Destroy(_bodyFont.material);
+            UnityEngine.Object.Destroy(_bodyFont);
+        }
+        if (_ownedBodySource != null) UnityEngine.Object.Destroy(_ownedBodySource);
+        _bodyFont = null; _ownedBodySource = null; _ownsBodyFont = false;
     }
 
     private void CycleDevice()
@@ -154,23 +238,27 @@ internal sealed class VoiceSettingsPanel
 
     internal void Close()
     {
-        if (!_ownsModal && _root == null) return;
-        if (_root != null) { _root.SetActive(false); UnityEngine.Object.Destroy(_root); }
-        _root = null; _ownsModal = false;
+        if (!_ownsModal && _root == null) { ReleaseBodyFont(); return; }
+        var root = _root; _root = null;
         _controls.Clear(); _bindingKey = false;
-        NoticeInputGuard.NativeModal = false;
-        Cursor.lockState = _previousCursorLock; Cursor.visible = _previousCursorVisible;
-        EventSystem.current?.SetSelectedGameObject(_previousSelection != null && _previousSelection.activeInHierarchy ? _previousSelection : null);
-        _previousSelection = null;
-        PlayerController.SetTakeInputDelay(.1f);
-        _config.Save();
+        try
+        {
+            _lifetime.Close(() =>
+            {
+                try { if (root != null) { root.SetActive(false); UnityEngine.Object.Destroy(root); } }
+                finally { ReleaseBodyFont(); }
+            });
+        }
+        finally { _config.Save(); }
     }
 
-    private TMP_Text Label(string text, float x, float y, float width, float height, float size, Color? color = null, Transform parent = null)
+    private TMP_Text Label(string text, float x, float y, float width, float height, float size, Color? color = null, Transform parent = null, bool heading = false)
     {
         var rect = Rect("Label", parent ?? _panel, x, y, width, height);
         var label = rect.gameObject.AddComponent<TextMeshProUGUI>();
-        label.font = _fontTemplate.font; label.fontSharedMaterial = _fontTemplate.fontSharedMaterial;
+        label.font = heading ? _fontTemplate.font : _bodyFont;
+        label.fontSharedMaterial = heading ? _fontTemplate.fontSharedMaterial : _bodyFont.material;
+        label.richText = false;
         label.fontSize = size; label.color = color ?? new Color(.95f, .9f, .78f); label.alignment = TextAlignmentOptions.MidlineLeft;
         label.overflowMode = TextOverflowModes.Ellipsis; label.text = text; label.raycastTarget = false;
         return label;

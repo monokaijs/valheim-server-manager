@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Use transparent PNG voice icons; show the HUD only during speech, with waves following input loudness.
+- Redesign F8 voice settings with a regular body font, heading-only Valheim styling, input meter, clipping warnings and capture/transport/output status.
+- Count locally accepted voice sends accurately, honor consent/participation capture gates, and recover failed playback streams.
+- Add anonymous, rate-limited diagnostics across capture, relay and playback to investigate silent audio without recording or logging voice contents.
+- Start the companion requirement grace period after native authentication, preventing premature disconnects during connection setup.
+
 ## 2.7.2
 
 - Keep five periodic server-owned character restore points, sampled 30 minutes apart while the player is online.

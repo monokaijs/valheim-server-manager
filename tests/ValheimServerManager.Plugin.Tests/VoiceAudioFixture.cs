@@ -7,7 +7,7 @@ internal static class VoiceAudioFixture
     internal static void Reset()
     {
         Time.unscaledTime = 10;
-        Input.Pressed = false;
+        Input.Pressed = false; AudioSource.PlayThrows = false; AudioClip.CreateFails = false;
         GameObject.Objects.Clear();
         Microphone.devices = ["first", "second"];
         Microphone.Position = Microphone.Starts = Microphone.Ends = 0;
@@ -56,6 +56,7 @@ internal sealed class GameObject : Object
 }
 internal sealed class AudioClip : Object
 {
+    internal static bool CreateFails;
     internal float[] Data = [];
     internal int channels = 1, samples = 16000, frequency = 16000;
     internal bool Readable = true;
@@ -70,17 +71,18 @@ internal sealed class AudioClip : Object
         return true;
     }
     internal static AudioClip Create(string name, int count, int channels, int rate, bool stream, Action<float[]> callback)
-        => new() { samples = count, channels = channels, frequency = rate, Callback = callback };
+        => CreateFails ? null! : new() { samples = count, channels = channels, frequency = rate, Callback = callback };
 }
 internal enum AudioRolloffMode { Linear }
 internal sealed class AudioSource : Object
 {
+    internal static bool PlayThrows;
     public AudioSource() { }
     internal float volume, spatialBlend, minDistance, maxDistance, dopplerLevel;
     internal bool loop, isPlaying;
     internal AudioRolloffMode rolloffMode;
     internal AudioClip clip = null!;
-    internal void Play() { isPlaying = true; }
+    internal void Play() { if (PlayThrows) throw new InvalidOperationException("synthetic output failure"); isPlaying = true; }
     internal void Stop() { isPlaying = false; }
 }
 internal static class Microphone

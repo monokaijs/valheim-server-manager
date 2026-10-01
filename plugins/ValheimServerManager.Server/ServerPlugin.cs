@@ -57,6 +57,7 @@ public sealed partial class ServerPlugin : BaseUnityPlugin
     private string _requiredModRevision;
     private DateTime _policyGraceUntil;
     private readonly Dictionary<ZNetPeer, string> _modReceipts = new();
+    private readonly VoiceRelayDiagnostics _voiceDiagnostics = new();
     private readonly HashSet<long> _voiceParticipants = new();
     private readonly Dictionary<long, (DateTime UpdatedAt, double Credits)> _voiceRate = new();
     private bool _voiceEnabled = true;
@@ -147,6 +148,8 @@ public sealed partial class ServerPlugin : BaseUnityPlugin
         for (var index = 0; index < 32 && _mainThread.TryDequeue(out var action); index++)
             try { action(); } catch (Exception ex) { Logger.LogError(ex); }
         if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+        var voiceDiagnostic = _voiceDiagnostics.Poll(Time.unscaledTime);
+        if (voiceDiagnostic != null) Logger.LogInfo(voiceDiagnostic);
         TryRegisterClientRpcs();
         TickWorldMap();
         if (!_pluginRegistryPublished && Time.unscaledTime > 2f) PublishPluginRegistry();
@@ -959,37 +962,48 @@ public sealed partial class ServerPlugin : BaseUnityPlugin
         RegisterMapRpcs(peer);
     }
 
-    private bool CanVoice(ZNetPeer peer) => _voiceEnabled && peer != null && peer.m_uid != 0 && peer.IsReady()
-        && _voiceParticipants.Contains(peer.m_uid) && _companions.TryGetValue(peer.m_uid, out var inventoryAllowed) && inventoryAllowed
-        && !_scheduledKicks.ContainsKey(peer.m_uid) && !string.IsNullOrEmpty(_requiredModRevision)
-        && _modReceipts.TryGetValue(peer, out var receipt) && receipt == _requiredModRevision;
+    private VoiceRelayResult VoiceEligibility(ZNetPeer peer) => VoiceRelayRules.Eligibility(_voiceEnabled,
+        peer != null && peer.m_uid != 0 && peer.IsReady(), peer != null && _voiceParticipants.Contains(peer.m_uid),
+        peer != null && _companions.TryGetValue(peer.m_uid, out var consent) && consent,
+        peer != null && !string.IsNullOrEmpty(_requiredModRevision)
+            && _modReceipts.TryGetValue(peer, out var receipt) && receipt == _requiredModRevision,
+        peer != null && _scheduledKicks.ContainsKey(peer.m_uid));
 
     private void OnVoiceFrame(ZNetPeer sender, string encoded)
     {
-        if (!CanVoice(sender) || encoded == null || encoded.Length > 900 || ZDOMan.instance == null
-            || sender.m_characterID.IsNone()) return;
+        var eligibility = VoiceEligibility(sender);
+        if (eligibility != VoiceRelayResult.Allowed) { _voiceDiagnostics.Record(eligibility); return; }
+        if (encoded == null || encoded.Length > 900) { _voiceDiagnostics.Record(VoiceRelayResult.InvalidPacket); return; }
+        if (ZDOMan.instance == null || sender.m_characterID.IsNone())
+        { _voiceDiagnostics.Record(VoiceRelayResult.CharacterMissing); return; }
         byte[] frame;
         try { frame = Convert.FromBase64String(encoded); }
-        catch (FormatException) { return; }
-        if (frame.Length != VoiceCodec.FrameSamples) return;
+        catch (FormatException) { _voiceDiagnostics.Record(VoiceRelayResult.InvalidPacket); return; }
+        if (frame.Length != VoiceCodec.FrameSamples) { _voiceDiagnostics.Record(VoiceRelayResult.InvalidPacket); return; }
         var source = ZDOMan.instance.GetZDO(sender.m_characterID);
-        if (source == null) return;
+        if (source == null) { _voiceDiagnostics.Record(VoiceRelayResult.CharacterMissing); return; }
         var now = DateTime.UtcNow;
         var credits = _voiceRate.TryGetValue(sender.m_uid, out var rate)
             ? Math.Min(2d, rate.Credits + Math.Max(0d, (now - rate.UpdatedAt).TotalSeconds) * 25d) : 2d;
         _voiceRate[sender.m_uid] = (now, credits < 1d ? credits : credits - 1d);
-        if (credits < 1d) return;
+        if (credits < 1d) { _voiceDiagnostics.Record(VoiceRelayResult.RateLimited); return; }
+        _voiceDiagnostics.Record(VoiceRelayResult.Allowed);
         var position = source.GetPosition();
         var packet = Convert.ToBase64String(VoiceCodec.Relay(sender.m_uid, position.x, position.y, position.z, frame));
-        var rangeSquared = _voiceRange * _voiceRange;
+        var sent = 0;
         foreach (var recipient in ZNet.instance.GetPeers())
         {
-            if (recipient == sender || !CanVoice(recipient) || recipient.m_characterID.IsNone()
-                || recipient.m_rpc?.GetSocket() == null || recipient.m_rpc.GetSocket().GetSendQueueSize() > 16 * 1024) continue;
-            var target = ZDOMan.instance.GetZDO(recipient.m_characterID);
-            if (target == null || (target.GetPosition() - position).sqrMagnitude > rangeSquared) continue;
-            InvokePeer(recipient, "VSM_VoiceFrame", packet);
+            if (recipient == sender) continue; // Voice never loops back to the sender.
+            var target = recipient.m_characterID.IsNone() ? null : ZDOMan.instance.GetZDO(recipient.m_characterID);
+            var socket = recipient.m_rpc?.GetSocket();
+            var result = VoiceRelayRules.Recipient(false, VoiceEligibility(recipient), target != null,
+                target == null ? 0f : (target.GetPosition() - position).sqrMagnitude, _voiceRange,
+                socket != null, socket?.GetSendQueueSize() ?? 0);
+            if (result != VoiceRelayResult.Allowed) { _voiceDiagnostics.Record(result); continue; }
+            try { recipient.m_rpc.Invoke("VSM_VoiceFrame", packet); sent++; _voiceDiagnostics.Record(VoiceRelayResult.Relayed); }
+            catch (Exception) { _voiceDiagnostics.Record(VoiceRelayResult.SendFailure); }
         }
+        if (sent == 0) _voiceDiagnostics.Record(VoiceRelayResult.NoRecipient);
     }
 
     private void RegisterDeathRpcs(ZNet znet, ZNetPeer peer)

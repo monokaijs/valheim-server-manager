@@ -1,6 +1,7 @@
 #nullable disable
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using UnityEngine;
 using ValheimServerManager.VoiceSupport;
 
@@ -28,11 +29,30 @@ internal sealed class VoiceChatClient : IDisposable
     private float _voiceGateUntil;
     private float _lastSentAt = float.NegativeInfinity;
     private readonly Dictionary<long, Playback> _playbacks = new();
+    internal readonly VoiceLevel Level = new();
+    internal long CapturedFrames, EncodedFrames, SentFrames, SendDrops, ReceivedFrames, DecodedFrames,
+        InvalidPackets, ReceiveDrops, CaptureFailures, PlaybackFailures, PlaybackStarts, OutputSamples, Underruns, ClippedFrames;
+    internal string CaptureStatus { get; private set; } = "Microphone idle";
+    internal string TransportStatus { get; private set; } = "No frames sent";
+    internal string PlaybackStatus { get; private set; } = "No voice received";
+    private float _nextDiagnostic;
+    private string _lastDiagnostic;
+    internal bool Speaking => Transmitting && Level.Speaking(Time.unscaledTime);
+    internal int WaveCount => Speaking ? Level.Waves(Time.unscaledTime) : 0;
+    internal string Summary => $"capture={CapturedFrames} encode={EncodedFrames} sent={SentFrames} dropped={SendDrops} receive={ReceivedFrames} receiveDrop={ReceiveDrops} decode={DecodedFrames} start={PlaybackStarts} outputSamples={Interlocked.Read(ref OutputSamples)} underruns={Interlocked.Read(ref Underruns)} invalid={InvalidPackets} captureFail={CaptureFailures} outputFail={PlaybackFailures} clipped={ClippedFrames}";
+    internal void Diagnose(Action<string> log, string gate)
+    {
+        if (Time.unscaledTime < _nextDiagnostic) return;
+        var value = gate + "; " + CaptureStatus + "; " + TransportStatus + "; " + PlaybackStatus + "; " + Summary;
+        if (value == _lastDiagnostic) return;
+        _nextDiagnostic = Time.unscaledTime + 10f; _lastDiagnostic = value;
+        log("Voice flow: " + value);
+    }
     internal bool MicrophoneUnavailable => ReadMicrophone == null || _microphoneUnavailable;
     internal bool Transmitting => _microphoneClip != null && Time.unscaledTime - _lastSentAt < .2f;
 
     internal void Tick(bool active, VoiceChatMode mode, KeyCode pushToTalk, string inputDevice, float microphoneGain,
-        float activationThreshold, float volume, Action<string> send)
+        float activationThreshold, float volume, Func<string, bool> send)
     {
         inputDevice = string.IsNullOrWhiteSpace(inputDevice) ? null : inputDevice;
         if (!string.Equals(_requestedDevice, inputDevice, StringComparison.Ordinal))
@@ -42,36 +62,42 @@ internal sealed class VoiceChatClient : IDisposable
             _retryAt = 0f;
             _microphoneUnavailable = false;
         }
-        foreach (var playback in _playbacks.Values) playback.Volume = volume;
         var expired = new List<long>();
         foreach (var pair in _playbacks)
-            if (!active || Time.unscaledTime - pair.Value.LastFrameAt > 5f) expired.Add(pair.Key);
+            try { pair.Value.Volume = volume; }
+            catch (Exception error)
+            { PlaybackFailures++; PlaybackStatus = "Playback failed (" + error.GetType().Name + "); check output device"; expired.Add(pair.Key); }
+        foreach (var pair in _playbacks)
+            if ((!active || Time.unscaledTime - pair.Value.LastFrameAt > 5f) && !expired.Contains(pair.Key)) expired.Add(pair.Key);
         foreach (var id in expired) { _playbacks[id].Dispose(); _playbacks.Remove(id); }
 
         if (!active || mode == VoiceChatMode.PushToTalk && (pushToTalk == KeyCode.None || !Input.GetKey(pushToTalk)))
         {
             StopMicrophone();
+            if (!MicrophoneUnavailable) CaptureStatus = active ? "Hold the push-to-talk key to capture" : "Microphone idle";
             return;
         }
-        if (ReadMicrophone == null || Time.unscaledTime < _retryAt) return;
+        if (ReadMicrophone == null) { CaptureStatus = "Capture API unavailable; check the companion/game versions"; return; }
+        if (Time.unscaledTime < _retryAt) return;
         if (_microphoneClip == null)
         {
             try
             {
                 var devices = Microphone.devices;
                 if (devices == null || devices.Length == 0 || inputDevice != null
-                    && Array.IndexOf(devices, inputDevice) < 0) { FailMicrophone(); return; }
+                    && Array.IndexOf(devices, inputDevice) < 0) { FailMicrophone("No selected input; choose a microphone and check system permission"); return; }
                 _activeDevice = inputDevice;
                 _ownsMicrophone = true;
                 _microphoneClip = Microphone.Start(_activeDevice, true, 1, VoiceCodec.SampleRate);
                 _readPosition = 0;
                 _lastCapturePosition = 0;
                 _lastCaptureProgressAt = Time.unscaledTime;
+                CaptureStatus = "Starting capture; waiting for samples";
                 if (_microphoneClip == null || _microphoneClip.channels < 1 || _microphoneClip.channels > 32
                     || _microphoneClip.samples < VoiceCodec.FrameSamples * 2 || _microphoneClip.frequency != VoiceCodec.SampleRate)
-                    FailMicrophone();
+                    FailMicrophone("Unsupported input format; choose another device");
             }
-            catch (Exception) { FailMicrophone(); }
+            catch (Exception error) { FailMicrophone("Capture start failed (" + error.GetType().Name + "); check microphone permission/device"); }
             return;
         }
         try
@@ -81,7 +107,9 @@ internal sealed class VoiceChatClient : IDisposable
             if (current < 0 || current >= capacity)
             {
                 _microphoneUnavailable = true;
-                if (Time.unscaledTime - _lastCaptureProgressAt >= CaptureTimeout) FailMicrophone();
+                CaptureStatus = "Invalid capture cursor; waiting for recovery";
+                Level.Reset();
+                if (Time.unscaledTime - _lastCaptureProgressAt >= CaptureTimeout) FailMicrophone("Capture cursor invalid; check microphone device");
                 return;
             }
             if (current != _lastCapturePosition)
@@ -91,7 +119,7 @@ internal sealed class VoiceChatClient : IDisposable
             }
             else if (Time.unscaledTime - _lastCaptureProgressAt >= CaptureTimeout)
             {
-                FailMicrophone();
+                FailMicrophone("Input stalled; check microphone permission/device");
                 return;
             }
             var available = (current - _readPosition + capacity) % capacity;
@@ -108,9 +136,10 @@ internal sealed class VoiceChatClient : IDisposable
                 var interleaved = new float[VoiceCodec.FrameSamples * channels];
                 if (!ReadMicrophone(_microphoneClip, interleaved, _readPosition))
                 {
-                    _microphoneUnavailable = true;
+                    _microphoneUnavailable = true; Level.Reset();
+                    CaptureStatus = "Input read failed; waiting for recovery";
                     if (_readFailureAt < 0f) _readFailureAt = Time.unscaledTime;
-                    if (Time.unscaledTime - _readFailureAt >= ReadFailureTimeout) FailMicrophone();
+                    if (Time.unscaledTime - _readFailureAt >= ReadFailureTimeout) FailMicrophone("Input read failed; check microphone permission/device");
                     break;
                 }
                 _readFailureAt = -1f;
@@ -119,6 +148,7 @@ internal sealed class VoiceChatClient : IDisposable
                 _readPosition = (_readPosition + VoiceCodec.FrameSamples) % capacity;
                 available -= VoiceCodec.FrameSamples;
                 var energy = 0f;
+                var clipped = false;
                 for (var index = 0; index < samples.Length; index++)
                 {
                     var mixed = 0f;
@@ -127,22 +157,37 @@ internal sealed class VoiceChatClient : IDisposable
                         var value = interleaved[index * channels + channel];
                         if (Finite(value)) mixed += Mathf.Clamp(value, -1f, 1f) / channels;
                     }
-                    samples[index] = Mathf.Clamp(mixed * (Finite(microphoneGain) ? microphoneGain : 1f), -1f, 1f);
+                    var amplified = mixed * (Finite(microphoneGain) ? microphoneGain : 1f);
+                    clipped |= Math.Abs(amplified) >= .99f;
+                    samples[index] = Mathf.Clamp(amplified, -1f, 1f);
                     energy += samples[index] * samples[index];
                 }
+                CapturedFrames++;
+                var rms = Mathf.Sqrt(energy / samples.Length);
+                Level.Add(rms, clipped, activationThreshold, Time.unscaledTime);
+                if (clipped) ClippedFrames++;
+                CaptureStatus = clipped ? "Input clipping; reduce microphone gain" : rms < .001f ? "Input silent; check device/mute if speaking" : "Input samples captured";
                 if (mode == VoiceChatMode.VoiceActivation)
                 {
-                    if (Mathf.Sqrt(energy / samples.Length) >= activationThreshold)
+                    if (rms >= (Finite(activationThreshold) ? Mathf.Clamp(activationThreshold, .001f, .2f) : .015f))
                         _voiceGateUntil = Time.unscaledTime + .3f;
                     if (Time.unscaledTime > _voiceGateUntil) continue;
                 }
-                send(Convert.ToBase64String(VoiceCodec.Encode(samples)));
-                _lastSentAt = Time.unscaledTime;
+                var encoded = Convert.ToBase64String(VoiceCodec.Encode(samples));
+                EncodedFrames++;
+                try
+                {
+                    if (send(encoded))
+                    { SentFrames++; _lastSentAt = Time.unscaledTime; TransportStatus = "Frames queued to server (delivery unconfirmed)"; }
+                    else { SendDrops++; TransportStatus = "Send skipped; disconnected or queue busy"; }
+                }
+                catch (Exception error)
+                { SendDrops++; TransportStatus = "Send failed (" + error.GetType().Name + "); check connection"; }
             }
         }
-        catch (Exception)
+        catch (Exception error)
         {
-            FailMicrophone();
+            FailMicrophone("Capture failed (" + error.GetType().Name + "); check input device");
         }
     }
 
@@ -150,28 +195,38 @@ internal sealed class VoiceChatClient : IDisposable
     {
         foreach (var playback in _playbacks.Values)
             try { playback.Range = range; }
-            catch (Exception) { /* A destroyed audio source must not abort a policy RPC. */ }
+            catch (Exception error) { PlaybackFailures++; PlaybackStatus = "Playback range failed (" + error.GetType().Name + "); stream will retry"; }
     }
 
     internal void Receive(string encoded, float range, float volume)
     {
-        if (encoded == null || encoded.Length > 900) return;
+        ReceivedFrames++;
+        if (encoded == null || encoded.Length > 900) { InvalidPacket(); return; }
         byte[] packet;
         try { packet = Convert.FromBase64String(encoded); }
-        catch (FormatException) { return; }
-        if (!VoiceCodec.TryReadRelay(packet, out var sender, out var x, out var y, out var z, out var frame)) return;
+        catch (FormatException) { InvalidPacket(); return; }
+        if (!VoiceCodec.TryReadRelay(packet, out var sender, out var x, out var y, out var z, out var frame)) { InvalidPacket(); return; }
         try
         {
             if (!_playbacks.TryGetValue(sender, out var playback))
             {
-                playback = new Playback(sender, range);
+                playback = new Playback(this, sender, range);
                 _playbacks.Add(sender, playback);
             }
             playback.Range = range;
             playback.Add(frame, new Vector3(x, y, z), volume);
+            PlaybackStatus = volume <= 0 ? "Playback volume is zero" : "Voice decoded; awaiting/feeding audio output";
         }
-        catch (Exception) { /* A failed audio device should not abort the game RPC loop. */ }
+        catch (Exception error)
+        {
+            PlaybackFailures++; PlaybackStatus = "Playback failed (" + error.GetType().Name + "); check output device";
+            if (_playbacks.TryGetValue(sender, out var failed)) { failed.Dispose(); _playbacks.Remove(sender); }
+        }
     }
+
+    internal void RejectReceive() { ReceiveDrops++; PlaybackStatus = "Receive blocked by local mute/server policy/session state"; }
+
+    private void InvalidPacket() { InvalidPackets++; PlaybackStatus = "Invalid voice packet; check matching companion versions"; }
 
     private void StopMicrophone()
     {
@@ -185,12 +240,14 @@ internal sealed class VoiceChatClient : IDisposable
         _readFailureAt = -1f;
         _voiceGateUntil = 0f;
         _lastSentAt = float.NegativeInfinity;
+        Level.Reset();
     }
 
-    private void FailMicrophone()
+    private void FailMicrophone(string status)
     {
         StopMicrophone();
         _microphoneUnavailable = true;
+        CaptureFailures++; CaptureStatus = status + "; retry in 3 seconds";
         _retryAt = Time.unscaledTime + RetryDelay;
     }
 
@@ -203,6 +260,11 @@ internal sealed class VoiceChatClient : IDisposable
         _playbacks.Clear();
         _retryAt = 0f;
         _microphoneUnavailable = false;
+        CaptureStatus = "Microphone idle"; TransportStatus = "No frames sent"; PlaybackStatus = "No voice received";
+        CapturedFrames = EncodedFrames = SentFrames = SendDrops = ReceivedFrames = DecodedFrames = InvalidPackets =
+            ReceiveDrops = CaptureFailures = PlaybackFailures = PlaybackStarts = ClippedFrames = 0;
+        Interlocked.Exchange(ref OutputSamples, 0); Interlocked.Exchange(ref Underruns, 0);
+        _nextDiagnostic = 0; _lastDiagnostic = null;
     }
 
     public void Dispose() => Reset();
@@ -220,6 +282,7 @@ internal sealed class VoiceChatClient : IDisposable
 
     private sealed class Playback : IDisposable
     {
+        private readonly VoiceChatClient _owner;
         private readonly object _gate = new();
         private readonly Queue<float> _samples = new();
         private readonly GameObject _object;
@@ -229,20 +292,26 @@ internal sealed class VoiceChatClient : IDisposable
         internal float Volume { set { if (Finite(value)) _source.volume = Mathf.Clamp(value, 0f, 2f); } }
         internal float Range { set { if (Finite(value)) _source.maxDistance = Mathf.Clamp(value, 5f, 100f); } }
 
-        internal Playback(long sender, float range)
+        internal Playback(VoiceChatClient owner, long sender, float range)
         {
-            _object = new GameObject("VSM Voice " + sender);
-            _source = _object.AddComponent<AudioSource>();
-            _source.spatialBlend = 1f;
-            _source.rolloffMode = AudioRolloffMode.Linear;
-            _source.minDistance = 2f;
-            _source.maxDistance = 40f;
-            _source.volume = 1f;
-            Range = range;
-            _source.dopplerLevel = 0f;
-            _source.loop = true;
-            _clip = AudioClip.Create("VSM Voice Stream", VoiceCodec.SampleRate, 1, VoiceCodec.SampleRate, true, Read);
-            _source.clip = _clip;
+            _owner = owner;
+            try
+            {
+                _object = new GameObject("VSM Voice " + sender);
+                _source = _object.AddComponent<AudioSource>();
+                _source.spatialBlend = 1f;
+                _source.rolloffMode = AudioRolloffMode.Linear;
+                _source.minDistance = 2f;
+                _source.maxDistance = 40f;
+                _source.volume = 1f;
+                Range = range;
+                _source.dopplerLevel = 0f;
+                _source.loop = true;
+                _clip = AudioClip.Create("VSM Voice Stream", VoiceCodec.SampleRate, 1, VoiceCodec.SampleRate, true, Read);
+                if (_clip == null) throw new InvalidOperationException("Voice stream clip unavailable");
+                _source.clip = _clip;
+            }
+            catch { Dispose(); throw; }
         }
 
         internal void Add(byte[] frame, Vector3 position, float volume)
@@ -255,22 +324,27 @@ internal sealed class VoiceChatClient : IDisposable
             {
                 for (var index = 0; index < frame.Length; index++) _samples.Enqueue(VoiceCodec.Decode(frame[index]));
                 while (_samples.Count > VoiceCodec.FrameSamples * 6) _samples.Dequeue();
+                _owner.DecodedFrames++;
                 start = !_source.isPlaying && _samples.Count >= VoiceCodec.FrameSamples * 2;
             }
-            if (start) _source.Play();
+            if (start) { _source.Play(); _owner.PlaybackStarts++; }
         }
 
         private void Read(float[] data)
         {
+            var consumed = 0;
             lock (_gate)
-                for (var index = 0; index < data.Length; index++) data[index] = _samples.Count > 0 ? _samples.Dequeue() : 0f;
+                for (var index = 0; index < data.Length; index++)
+                { if (_samples.Count > 0) { data[index] = _samples.Dequeue(); consumed++; } else data[index] = 0f; }
+            Interlocked.Add(ref _owner.OutputSamples, consumed);
+            if (consumed < data.Length) Interlocked.Increment(ref _owner.Underruns);
         }
 
         public void Dispose()
         {
-            _source.Stop();
-            UnityEngine.Object.Destroy(_clip);
-            UnityEngine.Object.Destroy(_object);
+            try { if (_source != null) _source.Stop(); } catch (Exception) { }
+            if (_clip != null) UnityEngine.Object.Destroy(_clip);
+            if (_object != null) UnityEngine.Object.Destroy(_object);
         }
     }
 }

@@ -15,7 +15,7 @@ public sealed class VoiceChatClientTests : IDisposable
         bool active = true, string device = "", float gain = 1, float threshold = .015f)
     {
         Time.unscaledTime = time; Microphone.Position = position;
-        _client.Tick(active, mode, KeyCode.LeftAlt, device, gain, threshold, 1, _sent.Add);
+        _client.Tick(active, mode, KeyCode.LeftAlt, device, gain, threshold, 1, packet => { _sent.Add(packet); return true; });
     }
     private static float[] Decode(IEnumerable<string> packets) => packets.SelectMany(packet => Convert.FromBase64String(packet).Select(VoiceCodec.Decode)).ToArray();
     private static string Relay(long sender = 42) => Convert.ToBase64String(VoiceCodec.Relay(sender, 1, 2, 3, VoiceCodec.Encode(new float[640])));
@@ -266,5 +266,93 @@ public sealed class VoiceChatClientTests : IDisposable
         Tick(10, 0, active: false);
         Assert.True(obj.Destroyed); Assert.True(obj.Source.clip.Destroyed);
         Assert.Equal(0, Microphone.Starts);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DroppedOrThrowingTransportDoesNotClaimTransmissionOrFailCapture(bool throws)
+    {
+        Tick(10, 0);
+        Time.unscaledTime = 10.04f; Microphone.Position = 640;
+        _client.Tick(true, VoiceChatMode.OpenMic, KeyCode.LeftAlt, "", 1, .015f, 1,
+            _ => throws ? throw new IOException("synthetic private payload") : false);
+        Assert.Equal(1, _client.CapturedFrames); Assert.Equal(1, _client.EncodedFrames);
+        Assert.Equal(0, _client.SentFrames); Assert.Equal(1, _client.SendDrops);
+        Assert.False(_client.Transmitting); Assert.False(_client.Speaking);
+        Assert.False(_client.MicrophoneUnavailable); Assert.Equal(0, Microphone.Ends);
+        Assert.DoesNotContain("private", _client.TransportStatus);
+        Tick(10.08f, 1280); Assert.True(_client.Speaking); Assert.Equal(1, _client.SentFrames);
+    }
+
+    [Theory]
+    [InlineData((int)VoiceChatMode.OpenMic)]
+    [InlineData((int)VoiceChatMode.PushToTalk)]
+    public void SilenceCanBeSentButNeverDisplaysSpeakingHud(int value)
+    {
+        var mode = (VoiceChatMode)value;
+        Input.Pressed = true; Microphone.StartClip = _ => VoiceAudioFixture.Signal(silence: true);
+        Tick(10, 0, mode); Tick(10.04f, 640, mode);
+        Assert.True(_client.Transmitting); Assert.False(_client.Speaking); Assert.Equal(0, _client.WaveCount);
+        Assert.Equal(1, _client.CapturedFrames); Assert.Contains("silent", _client.CaptureStatus);
+        Microphone.LastStarted!.Data = VoiceAudioFixture.Signal().Data;
+        Tick(10.08f, 1280, mode); Assert.True(_client.Speaking); Assert.Equal(3, _client.WaveCount);
+        Tick(10.09f, 1280, mode, active: false); Assert.False(_client.Speaking);
+    }
+
+    [Fact]
+    public void ClippingAndCaptureFailuresHaveActionableDiagnosticsWithoutDeviceNames()
+    {
+        Tick(10, 0, device: "first", gain: 3); Tick(10.04f, 640, device: "first", gain: 3);
+        Assert.Equal(1, _client.ClippedFrames); Assert.Contains("reduce", _client.CaptureStatus);
+        Assert.DoesNotContain("first", _client.CaptureStatus);
+        Tick(12.1f, 640, device: "first"); Assert.Equal(1, _client.CaptureFailures);
+        Assert.Contains("stalled", _client.CaptureStatus); Assert.False(_client.Speaking);
+    }
+
+    [Fact]
+    public void DiagnosticsAreRateLimitedAndCountersResetPerConnection()
+    {
+        var log = new List<string>(); _client.Diagnose(log.Add, "ready");
+        Tick(10, 0); Tick(10.04f, 640); _client.Diagnose(log.Add, "ready"); Assert.Single(log);
+        Time.unscaledTime = 20; _client.Diagnose(log.Add, "ready"); Assert.Equal(2, log.Count);
+        Assert.Contains("sent=1", log[1]); Assert.DoesNotContain(_sent[0], log[1]);
+        _client.Reset(); Assert.Equal(0, _client.CapturedFrames); Assert.Equal(0, _client.SentFrames);
+        Assert.Equal(0, _client.OutputSamples); Assert.False(_client.Speaking);
+    }
+
+    [Fact]
+    public void ReceiveTracksInvalidDecodeOutputAndUnderrunSeparately()
+    {
+        _client.Receive("not base64", 40, 1); Assert.Equal(1, _client.InvalidPackets);
+        _client.Receive(new string('x', 901), 40, 1); Assert.Equal(2, _client.InvalidPackets);
+        _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
+        var source = GameObject.Objects.Single().Source;
+        Assert.Equal(4, _client.ReceivedFrames); Assert.Equal(2, _client.DecodedFrames);
+        Assert.Equal(1, _client.PlaybackStarts); Assert.Equal(0, _client.OutputSamples);
+        source.clip.Callback(new float[1400]);
+        Assert.Equal(1280, _client.OutputSamples); Assert.Equal(1, _client.Underruns);
+    }
+
+    [Fact]
+    public void PlaybackExceptionCleansUpAndNextFrameCanRecover()
+    {
+        _client.Receive(Relay(), 40, 1);
+        AudioSource.PlayThrows = true; _client.Receive(Relay(), 40, 1);
+        Assert.Equal(1, _client.PlaybackFailures); Assert.Contains("check output", _client.PlaybackStatus);
+        Assert.True(GameObject.Objects[0].Destroyed); Assert.True(GameObject.Objects[0].Source.clip.Destroyed);
+        AudioSource.PlayThrows = false; _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
+        Assert.True(GameObject.Objects[1].Source.isPlaying);
+    }
+
+    [Fact]
+    public void PlaybackCreationFailureAndReceiveGateHaveSeparateCountersAndCleanResources()
+    {
+        _client.RejectReceive(); Assert.Equal(1, _client.ReceiveDrops); Assert.Equal(0, _client.ReceivedFrames);
+        AudioClip.CreateFails = true; _client.Receive(Relay(), 40, 1);
+        Assert.Equal(1, _client.PlaybackFailures); Assert.Equal(0, _client.DecodedFrames);
+        Assert.True(GameObject.Objects.Single().Destroyed); Assert.Contains("check output", _client.PlaybackStatus);
+        AudioClip.CreateFails = false; _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
+        Assert.Equal(2, _client.DecodedFrames); Assert.True(GameObject.Objects.Last().Source.isPlaying);
     }
 }

@@ -12,6 +12,7 @@
   <ItemGroup>
     <Compile Include="../Shared/MapCoordinates.cs" Link="ServerSupport/MapCoordinates.cs" />
     <Compile Include="../Shared/ConnectionPolicy.cs" Link="ServerSupport/ConnectionPolicy.cs" />
+    <Compile Include="../Shared/VoiceRelayRules.cs" Link="ServerSupport/VoiceRelayRules.cs" />
     <Compile Include="../Shared/VoiceCodec.cs" Link="ServerSupport/VoiceCodec.cs" />
     <Compile Include="../Shared/DeathFence.cs" Link="ServerSupport/DeathFence.cs" />
     <Compile Include="../Shared/PeriodicCharacterBackup.cs" Link="ServerSupport/PeriodicCharacterBackup.cs" />

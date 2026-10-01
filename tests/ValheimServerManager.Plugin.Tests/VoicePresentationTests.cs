@@ -26,8 +26,74 @@ public sealed class VoicePresentationTests
     public void PanelFitsCanvasWithoutCropping(float width, float height)
     {
         var scale = VoicePresentation.PanelScale(width, height);
-        Assert.InRange(620 * scale, 1, width - 32);
-        Assert.InRange(680 * scale, 1, height - 32);
+        Assert.InRange(VoicePresentation.PanelWidth * scale, 1, width - 32);
+        Assert.InRange(VoicePresentation.PanelHeight * scale, 1, height - 32);
         Assert.InRange(scale, .1f, 1);
+    }
+
+    [Theory]
+    [InlineData((int)VoiceIndicatorState.Muted, true, false)]
+    [InlineData((int)VoiceIndicatorState.Ready, true, false)]
+    [InlineData((int)VoiceIndicatorState.Unavailable, true, false)]
+    [InlineData((int)VoiceIndicatorState.Transmitting, false, false)]
+    [InlineData((int)VoiceIndicatorState.Transmitting, true, true)]
+    public void OnlyActualSpeechHasAHud(int state, bool speaking, bool visible)
+        => Assert.Equal(visible, VoicePresentation.HudVisible((VoiceIndicatorState)state, speaking));
+
+    [Fact]
+    public void LoudnessHasThreeStableLevelsAndSilenceExpires()
+    {
+        var level = new VoiceLevel();
+        level.Add(.018f, false, .015f, 10); Assert.Equal(1, level.Waves(10));
+        level.Add(.05f, false, .015f, 10.04f); Assert.Equal(2, level.Waves(10.04f));
+        level.Add(.2f, true, .015f, 10.08f); Assert.Equal(3, level.Waves(10.08f)); Assert.True(level.Clipping);
+        level.Add(.085f, false, .015f, 10.12f); Assert.Equal(3, level.Waves(10.12f));
+        level.Add(0, false, .015f, 10.16f); Assert.True(level.Speaking(10.16f));
+        level.Add(0, false, .015f, 10.29f); Assert.False(level.Speaking(10.29f)); Assert.Equal(0, level.Waves(10.29f));
+        Assert.Equal(0, level.Meter(10.6f));
+        level.Reset(); Assert.Equal(0, level.Meter(10.6f)); Assert.False(level.Speaking(10.6f));
+    }
+
+    [Fact]
+    public void LevelHysteresisDoesNotFlapAtThresholdOrAcceptNonFiniteInput()
+    {
+        var level = new VoiceLevel();
+        level.Add(.015f, false, .015f, 10);
+        level.Add(.014f, false, .015f, 10.04f); Assert.True(level.Speaking(10.04f));
+        level.Add(float.NaN, false, float.NaN, 10.3f); Assert.False(level.Speaking(10.3f));
+        level.Add(float.PositiveInfinity, false, .015f, 10.5f); Assert.Equal(0, level.Meter(10.5f));
+    }
+
+    [Theory]
+    [InlineData("Valheim-Viking", false)]
+    [InlineData("NORSE", false)]
+    [InlineData("Arial", true)]
+    [InlineData("Liberation Sans SDF", true)]
+    [InlineData("", false)]
+    public void BodyFallbackExcludesDecorativeFonts(string name, bool usable)
+        => Assert.Equal(usable, VoicePresentation.ReadableFont(name));
+
+    [Fact]
+    public void ClosingAndReopeningModalRestoresCursorFocusOncePerSession()
+    {
+        var lifetime = new VoiceUiLifetime(); var restored = 0; var destroyed = 0;
+        for (var index = 0; index < 3; index++)
+        {
+            lifetime.Begin(() => restored++); Assert.True(lifetime.IsOpen);
+            lifetime.Close(() => destroyed++); lifetime.Close(() => destroyed++);
+            Assert.False(lifetime.IsOpen);
+        }
+        Assert.Equal(3, restored); Assert.Equal(3, destroyed);
+    }
+
+    [Fact]
+    public void PartialOpenOrTeardownFailureStillRestoresModalOwnership()
+    {
+        var lifetime = new VoiceUiLifetime(); var restored = false;
+        lifetime.Begin(() => restored = true);
+        Assert.Throws<InvalidOperationException>(() => lifetime.Begin(() => { }));
+        Assert.Throws<IOException>(() => lifetime.Close(() => throw new IOException("synthetic teardown")));
+        Assert.True(restored); Assert.False(lifetime.IsOpen);
+        lifetime.Begin(() => { }); lifetime.Close(() => { }); Assert.False(lifetime.IsOpen);
     }
 }
