@@ -4,7 +4,7 @@ schemaVersion = "0.0.1"
 [package]
 namespace = "Creaton"
 name = "Server_Manager"
-versionNumber = "2.7.4"
+versionNumber = "2.7.5"
 description = "Client mod compatibility, inventory administration, server-owned characters, and proximity voice for Valheim Server Manager."
 websiteUrl = "https://github.com/monokaijs/valheim-server-manager"
 containsNsfwContent = false
