@@ -7,7 +7,7 @@ internal static class VoiceAudioFixture
     internal static void Reset()
     {
         Time.unscaledTime = 10;
-        Input.Pressed = false; AudioSource.PlayThrows = false; AudioClip.CreateFails = false;
+        Input.Pressed = false; AudioSource.PlayThrows = false; AudioClip.CreateFails = false; AudioClip.Prefill = false;
         GameObject.Objects.Clear();
         Microphone.devices = ["first", "second"];
         Microphone.Position = Microphone.Starts = Microphone.Ends = 0;
@@ -56,7 +56,7 @@ internal sealed class GameObject : Object
 }
 internal sealed class AudioClip : Object
 {
-    internal static bool CreateFails;
+    internal static bool CreateFails, Prefill;
     internal float[] Data = [];
     internal int channels = 1, samples = 16000, frequency = 16000;
     internal bool Readable = true;
@@ -71,7 +71,12 @@ internal sealed class AudioClip : Object
         return true;
     }
     internal static AudioClip Create(string name, int count, int channels, int rate, bool stream, Action<float[]> callback)
-        => CreateFails ? null! : new() { samples = count, channels = channels, frequency = rate, Callback = callback };
+    {
+        if (CreateFails) return null!;
+        var clip=new AudioClip {samples=count,channels=channels,frequency=rate,Callback=callback};
+        if (Prefill) callback(new float[count*channels]);
+        return clip;
+    }
 }
 internal enum AudioRolloffMode { Linear }
 internal sealed class AudioSource : Object
@@ -79,9 +84,19 @@ internal sealed class AudioSource : Object
     internal static bool PlayThrows;
     public AudioSource() { }
     internal float volume, spatialBlend, minDistance, maxDistance, dopplerLevel;
-    internal bool loop, isPlaying;
+    internal bool loop, isPlaying, playOnAwake;
+    internal bool bypassReverbZones, bypassListenerEffects, bypassEffects;
+    internal float reverbZoneMix = 1f;
     internal AudioRolloffMode rolloffMode;
     internal AudioClip clip = null!;
+    // Synthetic spatial boundary following Unity Linear rolloff; production
+    // source configuration and positions are exercised, native mixing is not.
+    internal float GainAt(Vector3 source, Vector3 listener)
+    {
+        var dx=source.x-listener.x; var dy=source.y-listener.y; var dz=source.z-listener.z;
+        var distance=(float)Math.Sqrt(dx*dx+dy*dy+dz*dz);
+        return volume*Math.Clamp((maxDistance-distance)/(maxDistance-minDistance),0f,1f);
+    }
     internal void Play() { if (PlayThrows) throw new InvalidOperationException("synthetic output failure"); isPlaying = true; }
     internal void Stop() { isPlaying = false; }
 }

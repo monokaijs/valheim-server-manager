@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Prevent ordinary voice RPC batches from losing frames while retaining the 25-frame/s sustained limit and a bounded burst.
+- Catch up microphone frames at low rendering rates, buffer received voice for jitter, and re-prime/fade after starvation without repeating old speech.
+- Bypass environmental reverb and audio effects for clearer positional speech; preserve gradual distance fade and live server-range updates.
+- Rebuild F8 voice sliders with centered thumbs, aligned tracks, larger hit rows, clear percentage/gain/RMS units and fine keyboard/controller steps.
+- Pause capture while rebinding the talk key, retain remote playback, and expose safe callback/rebuffer/trim diagnostics. Synthetic checks pass; native listening and UI acceptance remain pending.
+
 ## 2.7.6
 
 - Use transparent PNG voice icons; show the HUD only during speech, with waves following input loudness.

@@ -5,6 +5,7 @@ using Xunit;
 
 namespace ValheimServerManager.Plugin.Tests;
 
+[Collection("Voice Unity fixture")]
 public sealed class VoiceRelayTests
 {
     [Theory]
@@ -43,14 +44,35 @@ public sealed class VoiceRelayTests
             receiver.Receive(packet, 40, 1); relayed++; return true;
         }
         sender.Tick(true, VoiceChatMode.OpenMic, KeyCode.LeftAlt, "", 1, .015f, 1, Route);
-        Time.unscaledTime += .08f; Microphone.Position = 1280;
+        Time.unscaledTime += .12f; Microphone.Position = 1920;
         sender.Tick(true, VoiceChatMode.OpenMic, KeyCode.LeftAlt, "", 1, .015f, 1, Route);
-        Assert.Equal(2, sender.SentFrames); Assert.Equal(2, relayed); Assert.Equal(0, sender.ReceivedFrames);
-        Assert.Equal(2, receiver.DecodedFrames); Assert.Equal(1, receiver.PlaybackStarts);
+        Assert.Equal(3, sender.SentFrames); Assert.Equal(3, relayed); Assert.Equal(0, sender.ReceivedFrames);
+        Assert.Equal(3, receiver.DecodedFrames); Assert.Equal(1, receiver.PlaybackStarts);
         var output = new float[1280]; GameObject.Objects.Single().Source.clip.Callback(output);
         Assert.Contains(output, value => Math.Abs(value) > .1f); Assert.Equal(1280, receiver.OutputSamples);
     }
 
+    [Theory]
+    [InlineData(40)]
+    [InlineData(80)]
+    [InlineData(100)]
+    [InlineData(120)]
+    [InlineData(200)]
+    public void ProductionBudgetAllowsNormalSpeechBatchedByRpcUpdate(int batchMs)
+    {
+        var budget=new VoiceFrameBudget(); var origin=new DateTime(2026,10,1,0,0,0,DateTimeKind.Utc);
+        for(int generated=40;generated<=10000;generated+=40)
+            Assert.True(budget.TryTake(origin.AddMilliseconds((generated+batchMs-1)/batchMs*batchMs)));
+    }
+    [Fact]
+    public void ProductionBudgetBoundsAbuseAndDoesNotMintCreditsOnBackwardClock()
+    {
+        var budget=new VoiceFrameBudget(); var origin=new DateTime(2026,10,1,0,0,0,DateTimeKind.Utc);
+        Assert.Equal(8,Enumerable.Range(0,1000).Count(_=>budget.TryTake(origin)));
+        Assert.False(budget.TryTake(origin.AddSeconds(-1))); Assert.False(budget.TryTake(origin));
+        Assert.True(budget.TryTake(origin.AddMilliseconds(40))); Assert.False(budget.TryTake(origin.AddMilliseconds(40)));
+        Assert.Equal(25,Enumerable.Range(1,25).Count(i=>budget.TryTake(origin.AddMilliseconds(40+i*40))));
+    }
     [Fact]
     public void AnonymousRelayCountersDistinguishRejectionFromNoRecipientAndRateLimitLogs()
     {

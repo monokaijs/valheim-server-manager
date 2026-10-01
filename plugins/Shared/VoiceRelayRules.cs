@@ -52,3 +52,22 @@ internal sealed class VoiceRelayDiagnostics
         return "Voice relay: " + string.Join(" ", _counts.OrderBy(pair => pair.Key).Select(pair => pair.Key + "=" + pair.Value));
     }
 }
+
+// Game RPC updates can deliver multiple 40 ms frames together. Permit 320 ms of
+// catch-up while keeping the same 25 frame/s sustained per-sender limit.
+internal sealed class VoiceFrameBudget
+{
+    internal const double FramesPerSecond = VoiceCodec.SampleRate / (double)VoiceCodec.FrameSamples;
+    internal const double BurstFrames = 8d;
+    private double _credits = BurstFrames;
+    private DateTime _updatedAt;
+    private bool _initialized;
+    internal bool TryTake(DateTime now)
+    {
+        if (!_initialized) { _updatedAt = now; _initialized = true; }
+        if (now > _updatedAt)
+        { _credits = Math.Min(BurstFrames, _credits + (now - _updatedAt).TotalSeconds * FramesPerSecond); _updatedAt = now; }
+        if (_credits + 1e-9d < 1d) return false;
+        _credits = Math.Max(0d, _credits - 1d); return true;
+    }
+}

@@ -190,7 +190,7 @@ public sealed partial class ClientPlugin : BaseUnityPlugin
         }
         _voiceChat?.Tick(voiceActive && _voiceAdvertised == true, _voiceMode.Value, _voicePushToTalk.Value, _voiceInputDevice.Value,
             _voiceMicrophoneGain.Value, _voiceActivationThreshold.Value, _voiceVolume.Value,
-            encoded => TrySendVoice("VSM_VoiceFrame", encoded));
+            encoded => TrySendVoice("VSM_VoiceFrame", encoded), captureAllowed: _voiceSettings?.IsBindingKey != true);
         _voiceGate = !_voiceEnabled.Value ? "Voice muted locally" : !_serverVoicePolicyReceived ? "Waiting for server voice policy"
             : !_serverVoiceEnabled ? "Voice disabled by server" : !_allowInventory.Value ? "Voice blocked: inventory consent required"
             : !_handshake.Ready ? "Waiting for character/capability handshake"

@@ -16,6 +16,8 @@
     <Compile Include="../../plugins/ValheimServerManager.Server/PeerAdmission.cs" Link="PeerAdmission.cs" />
     <Compile Include="../../plugins/ValheimServerManager.Server/ClientAdmission.cs" Link="ServerClientAdmission.cs" />
     <Compile Include="../../plugins/ValheimServerManager.Client/VoicePresentation.cs" Link="VoicePresentation.cs" />
+    <Compile Include="../../plugins/ValheimServerManager.Client/VoiceSlider.cs" Link="VoiceSlider.cs" />
+    <Compile Include="../../plugins/ValheimServerManager.Client/VoicePlaybackBuffer.cs" Link="VoicePlaybackBuffer.cs" />
     <Compile Include="../../plugins/ValheimServerManager.Client/VoiceChatClient.cs" Link="VoiceChatClient.cs" />
     <Compile Include="../../plugins/Shared/VoiceRelayRules.cs" Link="VoiceRelayRules.cs" />
     <Compile Include="../../plugins/Shared/VoiceCodec.cs" Link="VoiceCodec.cs" />

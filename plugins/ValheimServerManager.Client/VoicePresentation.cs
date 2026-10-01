@@ -8,7 +8,7 @@ internal enum VoiceIndicatorState { Muted, Ready, Transmitting, Unavailable }
 // Presentation only: never opens a microphone or changes transport/voice policy.
 internal static class VoicePresentation
 {
-    internal const float PanelWidth = 620f, PanelHeight = 814f;
+    internal const float PanelWidth = 720f, PanelHeight = 814f;
     internal static bool HudVisible(VoiceIndicatorState state, bool speaking) =>
         state == VoiceIndicatorState.Transmitting && speaking;
     internal static bool ReadableFont(string name) => !string.IsNullOrWhiteSpace(name)
@@ -79,4 +79,28 @@ internal sealed class VoiceUiLifetime
         _restore = null;
         try { teardown(); } finally { restore(); }
     }
+}
+
+internal enum VoiceSliderKind { Playback, Gain, Threshold }
+internal sealed class VoiceSliderSpec
+{
+    internal const float Width = 656f, HitHeight = 44f, Thumb = 24f, Inset = 12f;
+    internal readonly VoiceSliderKind Kind;
+    internal readonly float Minimum, Maximum, Step, Default;
+    internal VoiceSliderSpec(VoiceSliderKind kind)
+    {
+        Kind = kind;
+        Minimum = kind == VoiceSliderKind.Threshold ? .001f : 0f;
+        Maximum = kind == VoiceSliderKind.Playback ? 2f : kind == VoiceSliderKind.Gain ? 3f : .2f;
+        Step = kind == VoiceSliderKind.Threshold ? .001f : .01f;
+        Default = kind == VoiceSliderKind.Threshold ? .015f : 1f;
+    }
+    internal float Clamp(float value) => float.IsNaN(value) || float.IsInfinity(value) ? Default
+        : Math.Max(Minimum, Math.Min(Maximum, (float)Math.Round(value / Step) * Step));
+    internal string Format(float value) => Kind switch
+    {
+        VoiceSliderKind.Playback => (Clamp(value) * 100f).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%",
+        VoiceSliderKind.Gain => Clamp(value).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + "×",
+        _ => (Clamp(value) * 100f).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "% RMS"
+    };
 }

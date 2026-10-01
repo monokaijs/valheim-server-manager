@@ -59,7 +59,7 @@ public sealed partial class ServerPlugin : BaseUnityPlugin
     private readonly Dictionary<ZNetPeer, string> _modReceipts = new();
     private readonly VoiceRelayDiagnostics _voiceDiagnostics = new();
     private readonly HashSet<long> _voiceParticipants = new();
-    private readonly Dictionary<long, (DateTime UpdatedAt, double Credits)> _voiceRate = new();
+    private readonly Dictionary<long, VoiceFrameBudget> _voiceRate = new();
     private bool _voiceEnabled = true;
     private float _voiceRange = 40f;
     private readonly HashSet<long> _modEnforcementHandled = new();
@@ -982,11 +982,9 @@ public sealed partial class ServerPlugin : BaseUnityPlugin
         if (frame.Length != VoiceCodec.FrameSamples) { _voiceDiagnostics.Record(VoiceRelayResult.InvalidPacket); return; }
         var source = ZDOMan.instance.GetZDO(sender.m_characterID);
         if (source == null) { _voiceDiagnostics.Record(VoiceRelayResult.CharacterMissing); return; }
-        var now = DateTime.UtcNow;
-        var credits = _voiceRate.TryGetValue(sender.m_uid, out var rate)
-            ? Math.Min(2d, rate.Credits + Math.Max(0d, (now - rate.UpdatedAt).TotalSeconds) * 25d) : 2d;
-        _voiceRate[sender.m_uid] = (now, credits < 1d ? credits : credits - 1d);
-        if (credits < 1d) { _voiceDiagnostics.Record(VoiceRelayResult.RateLimited); return; }
+        if (!_voiceRate.TryGetValue(sender.m_uid, out var budget))
+            _voiceRate[sender.m_uid] = budget = new VoiceFrameBudget();
+        if (!budget.TryTake(DateTime.UtcNow)) { _voiceDiagnostics.Record(VoiceRelayResult.RateLimited); return; }
         _voiceDiagnostics.Record(VoiceRelayResult.Allowed);
         var position = source.GetPosition();
         var packet = Convert.ToBase64String(VoiceCodec.Relay(sender.m_uid, position.x, position.y, position.z, frame));

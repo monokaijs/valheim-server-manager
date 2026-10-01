@@ -1,61 +1,37 @@
-// Review fixture only. Actual PNG assets and production coordinates; approximate
-// panel/button artwork and heading font. Does not launch Valheim or capture input.
+// Layout review only: actual PNGs and production dimensions, with approximate
+// heading font. This neither launches Valheim nor captures an in-game UI.
 import { chromium } from '../web/node_modules/@playwright/test/index.mjs';
 import { resolve } from 'node:path';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 const output = resolve(process.argv[2] ?? 'artifacts/voice-ui-review.png');
 await mkdir(resolve(output, '..'), { recursive: true });
-const pngs = await Promise.all([0, 1, 2, 3].map(async i => 'data:image/png;base64,' + (await readFile(new URL(`../plugins/ValheimServerManager.Client/Assets/Voice/microphone-${i}.png`, import.meta.url))).toString('base64')));
+const code = await readFile(new URL('../plugins/ValheimServerManager.Client/VoicePresentation.cs', import.meta.url),'utf8');
+const [width,height] = /PanelWidth = ([\d.]+)f, PanelHeight = ([\d.]+)f/.exec(code).slice(1).map(Number);
+const png = 'data:image/png;base64,' + (await readFile(new URL('../plugins/ValheimServerManager.Client/Assets/Voice/microphone-2.png', import.meta.url))).toString('base64');
 const browser = await chromium.launch({ executablePath: process.env.VSM_TEST_BROWSER });
 try {
-  const page = await browser.newPage({ viewport: { width: 1260, height: 1010 }, deviceScaleFactor: 1 });
-  await page.setContent('<canvas width="1260" height="1010"></canvas><style>body{margin:0}</style>');
-  await page.evaluate(async pngs => {
-    const ctx = document.querySelector('canvas').getContext('2d');
-    const icons = await Promise.all(pngs.map(src => new Promise(resolve => { const image = new Image(); image.onload = () => resolve(image); image.src = src; })));
-    const text = (s, x, y, size = 20, color = '#ede6d9', heading = false) => {
-      ctx.fillStyle = color; ctx.font = `${size}px ${heading ? 'Georgia' : 'Arial'}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(s, x, y);
-    };
-    const box = (x, y, w, h, fill, border) => { ctx.fillStyle = fill; ctx.fillRect(x,y,w,h); if(border){ctx.strokeStyle=border;ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,w-1,h-1);} };
-    box(0,0,1260,1010,'#122024');
-    text('Voice rework · review fixture', 40, 42, 30, '#f5d08a', true);
-    text('PNG pixels and layout only · not an in-game screenshot', 40, 80, 18, '#b5c3c4');
-    text('HUD appears only while speaking', 40, 150, 24, '#f5d08a', true);
-    ['Muted: hidden', 'Idle: hidden', 'Soft speech', 'Medium speech', 'Loud speech'].forEach((label, index) => {
-      const y = 200 + index * 76;
-      box(40, y - 27, 460, 60, index % 2 ? '#dae0d5' : '#1b3034');
-      text(label, 62, y + 3, 18, index % 2 ? '#172327' : '#ede6d9');
-      if (index >= 2) ctx.drawImage(icons[index - 1], 419, y - 21, 56, 44);
-    });
-    text('Input level is measured from captured samples.',40,630,18);
-    text('Wave count: 1 / 2 / 3, with smoothing and hysteresis.',40,660,17);
-    text('Push to talk keeps capture closed until the key is held.',40,705,17);
-    text('A queued frame does not prove remote delivery.',40,735,17);
-    text('The relay never echoes your voice back to you.',40,765,17);
-    text('Hardware audio and native UI acceptance remain pending.',40,810,17,'#c3bba8');
-    const nx=590, ny=124;
-    box(nx,ny,620,814,'#252a29','#74664a');
-    const label=(s,x,y,w,h,size=20,color='#ede6d9',heading=false)=>text(s,nx+x,ny+y+h/2,size,color,heading);
-    const button=(s,x,y,w=556)=>{box(nx+x,ny+y,w,42,'#343c3c','#8b7958');text(s,nx+x+14,ny+y+21,20);};
-    label('Voice chat',32,20,490,44,32,'#f5d08a',true);ctx.drawImage(icons[2],nx+536,ny+22,52,42);
-    label('Voice ready · another eligible player must be nearby',32,66,556,40,16);
-    button('Voice chat: Enabled',32,114);
-    label('Voice mode',32,166,180,40);button('Push to talk  ›',228,166,360);
-    label('Hold your key to send. The input meter follows capture.',32,210,556,28,16);
-    label('Microphone',32,246,556,24);button('System default  ›',32,274);
-    label('Select to cycle through available microphones.',32,320,556,24,15);
-    label('Input level',32,350,556,22,15);
-    box(nx+32,ny+376,556,10,'#121a1d');box(nx+32,ny+376,278,10,'#80cfa7');box(nx+65,ny+374,2,14,'#f5d08a');
-    label('Input samples captured',32,388,556,40,15);
-    label('Push to talk key',32,432,180,40);button('LeftAlt · Change',228,432,360);
-    const slider=(name,value,y,percent)=>{label(`${name}: ${value}`,32,y,556,24,20);box(nx+32,ny+y+36,556,6,'#121a1d');box(nx+32,ny+y+36,556*percent,6,'#c8b271');box(nx+32+536*percent,ny+y+28,22,22,'#d2c390','#f2df9c');};
-    slider('Playback volume','1.0',482,.5);slider('Microphone gain','1.0',542,1/3);slider('Speech threshold','0.015',602,.07);
-    label('Captured 42 · queued 42 · skipped 0 · received 38',32,662,556,20,14);
-    label('Frames queued to server (delivery unconfirmed)',32,686,556,20,15);
-    label('Voice decoded · output samples consumed',32,710,556,36,15);
-    button('Close · F8 / Esc / B',170,756,280);
-    text('Regular body font; Valheim heading font is used only for the title at runtime.',40,975,17,'#c3cccc');
-  }, pngs);
-  await page.screenshot({ path: output });
-  console.log(output);
-} finally { await browser.close(); }
+ const page = await browser.newPage({viewport:{width:width+100,height:height+160},deviceScaleFactor:1});
+ const html=`<!doctype html><meta charset="utf-8"><style>
+ *{box-sizing:border-box}body{margin:0;background:#101b20;color:#edf5f2;font-family:Arial,sans-serif} .caption{position:absolute;left:50px;top:22px;font-size:20px} .sub{position:absolute;left:50px;top:52px;color:#9bafb7;font-size:14px}.panel{position:absolute;left:50px;top:102px;width:${width}px;height:${height}px;background:#131f24;border-top:2px solid #ffc766}.panel>*{position:absolute;margin:0}.muted{color:#a3babe}.button{height:42px;background:#1f2e33;border:0;color:#edf5f2;font:18px Arial;display:flex;align-items:center;justify-content:center}.heading{font:32px Georgia;color:#ffc766}.small{font-size:14px}.label{display:flex;align-items:center}.slider{height:44px;cursor:pointer}.track{position:absolute;left:12px;right:12px;top:18px;height:8px;background:#0e1a1f}.fill{height:8px;background:#91c4ad}.thumb{position:absolute;top:10px;width:24px;height:24px;transform:translateX(-50%);background:#ffc766;border:4px solid #ffc766;box-shadow:inset 0 0 0 8px #131f24}.focused .thumb{background:white;border-color:white}.value{text-align:right;color:#ffc766;font-size:20px}.range{font-size:12px;color:#a3babe;display:flex;justify-content:space-between}
+ </style><div class="caption">Voice settings · after</div><div class="sub">Layout fixture with packaged PNG · not an in-game screenshot</div><div class="panel">
+ <img style="left:30px;top:25px;width:42px;height:34px;object-fit:contain" src="${png}"><h1 class="heading" style="left:86px;top:20px;height:44px;line-height:44px">Voice chat</h1><button class="button" style="left:512px;top:24px;width:176px">Voice enabled</button>
+ <p class="muted label" style="left:32px;top:70px;height:24px;font-size:17px">Nearby voices fade naturally with distance.</p>
+ <div style="left:32px;top:106px;width:656px;height:40px;background:#1f2e33;padding:11px 12px;font-size:16px">Voice ready · another eligible player must be nearby</div>
+ <label class="muted small" style="left:32px;top:160px">VOICE MODE</label><label class="muted small" style="left:372px;top:160px">PUSH TO TALK KEY</label>
+ <button class="button" style="left:32px;top:184px;width:320px">Push to talk ›</button><button class="button" style="left:372px;top:184px;width:316px">LeftAlt · Change</button>
+ <p class="muted" style="left:32px;top:232px;font-size:16px">Hold your key to send. The input meter follows capture.</p>
+ <label class="muted small" style="left:32px;top:270px">MICROPHONE</label><button class="button" style="left:32px;top:294px;width:656px">System default ›</button>
+ <p class="muted" style="left:32px;top:342px;font-size:15px">Select to cycle through available microphones.</p><p style="left:32px;top:370px;font-size:15px">Input level</p>
+ <div style="left:32px;top:396px;width:656px;height:10px;background:#0e1a1f"><div style="width:40%;height:10px;background:#80cfa7"></div><i style="position:absolute;left:6%;top:-2px;width:2px;height:14px;background:#ffc766"></i></div>
+ <p class="muted" style="left:32px;top:412px;font-size:15px">Input samples captured</p>
+ ${[['Playback volume','100%',450,.5,'0%','200%'],['Microphone gain','1.00×',532,1/3,'0.00×','3.00×'],['Speech threshold','1.5% RMS',614,.014/.199,'0.1% RMS','20.0% RMS']].map(([name,value,y,t,min,max],i)=>`<label style="left:32px;top:${y}px;font-size:20px">${name}</label><output class="value" style="left:500px;top:${y}px;width:188px">${value}</output><div class="slider ${i===0?'focused':''}" data-value="${t}" style="left:32px;top:${y+28}px;width:656px"><div class="track"><div class="fill" style="width:${t*100}%"></div></div><div class="thumb" style="left:${12+632*t}px"></div></div><div class="range" style="left:32px;top:${y+68}px;width:656px"><span>${min}</span><span>${max}</span></div>`).join('')}
+ <p class="muted small" style="left:32px;top:700px">Frames queued to server (delivery unconfirmed)</p><p class="muted small" style="left:32px;top:720px">Voice decoded · output samples consumed</p><p class="muted" style="left:32px;top:752px;font-size:13px">Sent 250 · received 250 · output gaps 0</p><button class="button" style="left:472px;top:756px;width:216px">Close · F8 / Esc / B</button></div>`;
+ await page.setContent(html); await page.screenshot({path:output});
+ const checks=await page.evaluate(()=>[...document.querySelectorAll('.slider')].map(s=>{
+  const r=s.getBoundingClientRect(),t=s.querySelector('.thumb').getBoundingClientRect(),track=s.querySelector('.track').getBoundingClientRect(),fill=s.querySelector('.fill').getBoundingClientRect();
+  return {hitHeight:r.height,thumbWidth:t.width,thumbHeight:t.height,aligned:Math.abs((t.left+t.width/2)-(fill.left+fill.width))<.1,contained:t.left>=r.left&&t.right<=r.right,trackHeight:track.height};
+ }));
+ if(checks.some(c=>c.hitHeight<44||c.thumbHeight!==24||!c.aligned||!c.contained)) throw Error('Review slider geometry invalid');
+ await writeFile(output.replace(/\.png$/,'.json'),JSON.stringify({fixture:true,actualGame:false,width,height,sliders:checks},null,2));
+ console.log(output);
+} finally {await browser.close();}

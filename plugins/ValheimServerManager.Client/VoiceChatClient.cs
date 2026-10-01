@@ -31,7 +31,7 @@ internal sealed class VoiceChatClient : IDisposable
     private readonly Dictionary<long, Playback> _playbacks = new();
     internal readonly VoiceLevel Level = new();
     internal long CapturedFrames, EncodedFrames, SentFrames, SendDrops, ReceivedFrames, DecodedFrames,
-        InvalidPackets, ReceiveDrops, CaptureFailures, PlaybackFailures, PlaybackStarts, OutputSamples, Underruns, ClippedFrames;
+        InvalidPackets, ReceiveDrops, CaptureFailures, PlaybackFailures, PlaybackStarts, OutputSamples, Underruns, ClippedFrames, RebufferWaits, TrimmedSamples, CallbackSamplesMax;
     internal string CaptureStatus { get; private set; } = "Microphone idle";
     internal string TransportStatus { get; private set; } = "No frames sent";
     internal string PlaybackStatus { get; private set; } = "No voice received";
@@ -39,7 +39,7 @@ internal sealed class VoiceChatClient : IDisposable
     private string _lastDiagnostic;
     internal bool Speaking => Transmitting && Level.Speaking(Time.unscaledTime);
     internal int WaveCount => Speaking ? Level.Waves(Time.unscaledTime) : 0;
-    internal string Summary => $"capture={CapturedFrames} encode={EncodedFrames} sent={SentFrames} dropped={SendDrops} receive={ReceivedFrames} receiveDrop={ReceiveDrops} decode={DecodedFrames} start={PlaybackStarts} outputSamples={Interlocked.Read(ref OutputSamples)} underruns={Interlocked.Read(ref Underruns)} invalid={InvalidPackets} captureFail={CaptureFailures} outputFail={PlaybackFailures} clipped={ClippedFrames}";
+    internal string Summary => $"capture={CapturedFrames} encode={EncodedFrames} sent={SentFrames} dropped={SendDrops} receive={ReceivedFrames} receiveDrop={ReceiveDrops} decode={DecodedFrames} start={PlaybackStarts} outputSamples={Interlocked.Read(ref OutputSamples)} underruns={Interlocked.Read(ref Underruns)} rebufferWaits={Interlocked.Read(ref RebufferWaits)} trimmedSamples={Interlocked.Read(ref TrimmedSamples)} callbackSamplesMax={Interlocked.Read(ref CallbackSamplesMax)} invalid={InvalidPackets} captureFail={CaptureFailures} outputFail={PlaybackFailures} clipped={ClippedFrames}";
     internal void Diagnose(Action<string> log, string gate)
     {
         if (Time.unscaledTime < _nextDiagnostic) return;
@@ -52,7 +52,7 @@ internal sealed class VoiceChatClient : IDisposable
     internal bool Transmitting => _microphoneClip != null && Time.unscaledTime - _lastSentAt < .2f;
 
     internal void Tick(bool active, VoiceChatMode mode, KeyCode pushToTalk, string inputDevice, float microphoneGain,
-        float activationThreshold, float volume, Func<string, bool> send)
+        float activationThreshold, float volume, Func<string, bool> send, bool captureAllowed = true)
     {
         inputDevice = string.IsNullOrWhiteSpace(inputDevice) ? null : inputDevice;
         if (!string.Equals(_requestedDevice, inputDevice, StringComparison.Ordinal))
@@ -71,10 +71,10 @@ internal sealed class VoiceChatClient : IDisposable
             if ((!active || Time.unscaledTime - pair.Value.LastFrameAt > 5f) && !expired.Contains(pair.Key)) expired.Add(pair.Key);
         foreach (var id in expired) { _playbacks[id].Dispose(); _playbacks.Remove(id); }
 
-        if (!active || mode == VoiceChatMode.PushToTalk && (pushToTalk == KeyCode.None || !Input.GetKey(pushToTalk)))
+        if (!active || !captureAllowed || mode == VoiceChatMode.PushToTalk && (pushToTalk == KeyCode.None || !Input.GetKey(pushToTalk)))
         {
             StopMicrophone();
-            if (!MicrophoneUnavailable) CaptureStatus = active ? "Hold the push-to-talk key to capture" : "Microphone idle";
+            if (!MicrophoneUnavailable) CaptureStatus = !captureAllowed ? "Capture paused while binding a key" : active ? "Hold the push-to-talk key to capture" : "Microphone idle";
             return;
         }
         if (ReadMicrophone == null) { CaptureStatus = "Capture API unavailable; check the companion/game versions"; return; }
@@ -129,7 +129,7 @@ internal sealed class VoiceChatClient : IDisposable
                 available = VoiceCodec.FrameSamples;
             }
             var channels = _microphoneClip.channels;
-            for (var count = 0; available >= VoiceCodec.FrameSamples && count < 2; count++)
+            for (var count = 0; available >= VoiceCodec.FrameSamples && count < 8; count++)
             {
                 // Unity offsets/positions count sample frames; GetData returns interleaved
                 // channel values. Read a full frame per channel before downmixing to mono.
@@ -264,6 +264,7 @@ internal sealed class VoiceChatClient : IDisposable
         CapturedFrames = EncodedFrames = SentFrames = SendDrops = ReceivedFrames = DecodedFrames = InvalidPackets =
             ReceiveDrops = CaptureFailures = PlaybackFailures = PlaybackStarts = ClippedFrames = 0;
         Interlocked.Exchange(ref OutputSamples, 0); Interlocked.Exchange(ref Underruns, 0);
+        Interlocked.Exchange(ref RebufferWaits, 0); Interlocked.Exchange(ref TrimmedSamples, 0); Interlocked.Exchange(ref CallbackSamplesMax, 0);
         _nextDiagnostic = 0; _lastDiagnostic = null;
     }
 
@@ -284,7 +285,7 @@ internal sealed class VoiceChatClient : IDisposable
     {
         private readonly VoiceChatClient _owner;
         private readonly object _gate = new();
-        private readonly Queue<float> _samples = new();
+        private readonly VoicePlaybackBuffer _buffer = new();
         private readonly GameObject _object;
         private readonly AudioSource _source;
         private readonly AudioClip _clip;
@@ -306,8 +307,14 @@ internal sealed class VoiceChatClient : IDisposable
                 _source.volume = 1f;
                 Range = range;
                 _source.dopplerLevel = 0f;
+                // Voice stays positional but must not inherit environmental tails.
+                _source.bypassReverbZones = true;
+                _source.reverbZoneMix = 0f;
+                _source.bypassListenerEffects = true;
+                _source.bypassEffects = true;
                 _source.loop = true;
-                _clip = AudioClip.Create("VSM Voice Stream", VoiceCodec.SampleRate, 1, VoiceCodec.SampleRate, true, Read);
+                _source.playOnAwake = false;
+                _clip = AudioClip.Create("VSM Voice Stream", VoiceCodec.FrameSamples * 4, 1, VoiceCodec.SampleRate, true, Read);
                 if (_clip == null) throw new InvalidOperationException("Voice stream clip unavailable");
                 _source.clip = _clip;
             }
@@ -316,28 +323,31 @@ internal sealed class VoiceChatClient : IDisposable
 
         internal void Add(byte[] frame, Vector3 position, float volume)
         {
+            var resumedAfterPause = Time.unscaledTime - LastFrameAt > .5f;
             LastFrameAt = Time.unscaledTime;
             _object.transform.position = position;
             Volume = volume;
             bool start;
             lock (_gate)
             {
-                for (var index = 0; index < frame.Length; index++) _samples.Enqueue(VoiceCodec.Decode(frame[index]));
-                while (_samples.Count > VoiceCodec.FrameSamples * 6) _samples.Dequeue();
+                if (resumedAfterPause) { Interlocked.Add(ref _owner.TrimmedSamples, _buffer.Count); _buffer.Clear(); }
+                Interlocked.Add(ref _owner.TrimmedSamples, _buffer.Add(frame));
                 _owner.DecodedFrames++;
-                start = !_source.isPlaying && _samples.Count >= VoiceCodec.FrameSamples * 2;
+                start = !_source.isPlaying && _buffer.Count >= VoicePlaybackBuffer.InitialSamples;
             }
             if (start) { _source.Play(); _owner.PlaybackStarts++; }
         }
 
         private void Read(float[] data)
         {
-            var consumed = 0;
-            lock (_gate)
-                for (var index = 0; index < data.Length; index++)
-                { if (_samples.Count > 0) { data[index] = _samples.Dequeue(); consumed++; } else data[index] = 0f; }
+            int consumed; bool underrun, waiting;
+            lock (_gate) consumed = _buffer.Read(data, out underrun, out waiting);
             Interlocked.Add(ref _owner.OutputSamples, consumed);
-            if (consumed < data.Length) Interlocked.Increment(ref _owner.Underruns);
+            if (underrun) Interlocked.Increment(ref _owner.Underruns);
+            if (waiting) Interlocked.Increment(ref _owner.RebufferWaits);
+            long previous;
+            do { previous = Interlocked.Read(ref _owner.CallbackSamplesMax); if (data.Length <= previous) break; }
+            while (Interlocked.CompareExchange(ref _owner.CallbackSamplesMax, data.Length, previous) != previous);
         }
 
         public void Dispose()

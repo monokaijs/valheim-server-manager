@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using BepInEx.Configuration;
-using HarmonyLib;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -37,8 +36,10 @@ internal sealed class VoiceSettingsPanel
     private string _gateStatus = "Waiting for server voice policy";
     internal void SetDiagnostics(string gate, VoiceChatClient audio) { _gateStatus = gate; _audio = audio; }
     private Button _buttonTemplate;
-    private Slider _sliderTemplate;
-    private Image _panelTemplate;
+    private static readonly Color Gold = new(1f, .78f, .40f);
+    private static readonly Color MutedText = new(.64f, .73f, .75f);
+    private static readonly Color Surface = new(.12f, .18f, .20f);
+    private static readonly Color Track = new(.055f, .10f, .12f);
     private bool _bindingKey, _previousCursorVisible;
     private readonly VoiceUiLifetime _lifetime = new();
     private bool _ownsModal => _lifetime.IsOpen;
@@ -47,6 +48,7 @@ internal sealed class VoiceSettingsPanel
     private float _nextDeviceRefresh;
     private int _bindingStartedFrame;
     internal bool IsOpen => _root != null;
+    internal bool IsBindingKey => _bindingKey;
 
     internal VoiceSettingsPanel(ConfigFile config, ConfigEntry<bool> enabled, ConfigEntry<VoiceChatMode> mode,
         ConfigEntry<KeyCode> pushToTalk, ConfigEntry<string> inputDevice, ConfigEntry<float> volume,
@@ -73,6 +75,7 @@ internal sealed class VoiceSettingsPanel
             }
         }
         if (!IsOpen) return;
+        var bindingBefore = _bindingKey;
         if (Input.GetKeyDown(KeyCode.Escape) || ZInput.GetButtonDown("JoyButtonB"))
         {
             ZInput.ResetButtonStatus("JoyButtonB");
@@ -84,6 +87,8 @@ internal sealed class VoiceSettingsPanel
                 if (key != KeyCode.None && key != KeyCode.F8 && key != KeyCode.Escape && (int)key < (int)KeyCode.JoystickButton0
                     && Input.GetKeyDown(key)) { _pushToTalk.Value = key; _bindingKey = false; break; }
         }
+        foreach (var control in _controls) control.interactable = !_bindingKey;
+        if (bindingBefore && !_bindingKey) EventSystem.current?.SetSelectedGameObject(_keyLabel.GetComponentInParent<Button>().gameObject);
         Cursor.lockState = CursorLockMode.None; Cursor.visible = true;
         var size = _canvasRect.rect.size;
         _panel.localScale = Vector3.one * VoicePresentation.PanelScale(size.x, size.y);
@@ -94,8 +99,8 @@ internal sealed class VoiceSettingsPanel
         }
         _status.text = _gateStatus;
         var meter = _audio?.Level.Meter(Time.unscaledTime) ?? 0f;
-        _meterFill.sizeDelta = new Vector2(556 * meter, 10);
-        _thresholdMarker.anchoredPosition = new Vector2(556 * Mathf.Clamp01(_activationThreshold.Value / .25f), 2);
+        _meterFill.sizeDelta = new Vector2(656 * meter, 10);
+        _thresholdMarker.anchoredPosition = new Vector2(656 * Mathf.Clamp01(_activationThreshold.Value / .25f), 2);
         var clipping = meter > 0 && _audio?.Level.Clipping == true;
         _meterImage.color = clipping ? new Color(1f, .35f, .22f) : new Color(.5f, .82f, .65f);
         _meterText.text = clipping ? "Clipping · reduce gain" : meter > 0 ? "Input level" : "Input idle / silent";
@@ -103,10 +108,10 @@ internal sealed class VoiceSettingsPanel
         _voiceImage.enabled = _voiceImage.sprite != null;
         _captureStatus.text = _audio?.CaptureStatus ?? "Microphone idle";
         _transportStatus.text = _audio?.TransportStatus ?? "No frames sent";
-        _flowCounts.text = _audio == null ? "" : $"Captured {_audio.CapturedFrames} · queued {_audio.SentFrames} · skipped {_audio.SendDrops} · received {_audio.ReceivedFrames}";
+        _flowCounts.text = _audio == null ? "" : $"Sent {_audio.SentFrames} · received {_audio.ReceivedFrames} · output gaps {_audio.Underruns}";
         _playbackStatus.text = _audio == null ? "No voice received" : _audio.PlaybackStatus +
             (_audio.OutputSamples > 0 ? " · output samples consumed" : "");
-        _enableLabel.text = _enabled.Value ? "Voice chat: Enabled" : "Voice chat: Muted";
+        _enableLabel.text = _enabled.Value ? "Voice enabled" : "Voice muted";
         _modeLabel.text = _mode.Value switch { VoiceChatMode.PushToTalk => "Push to talk  ›", VoiceChatMode.VoiceActivation => "Voice activation  ›", _ => "Open microphone  ›" };
         _modeHelp.text = _mode.Value switch { VoiceChatMode.PushToTalk => "Hold your key to send. The input meter follows capture.", VoiceChatMode.VoiceActivation => "Sends speech above the threshold; brief release prevents cuts.", _ => "Sends continuously. The HUD appears only for speech." };
         _deviceLabel.text = (string.IsNullOrEmpty(_inputDevice.Value) ? "System default" : _inputDevice.Value) + "  ›";
@@ -124,13 +129,8 @@ internal sealed class VoiceSettingsPanel
         var canvas = menu.GetComponentInParent<Canvas>();
         _buttonTemplate = menu.m_settingsButton;
         _fontTemplate = _buttonTemplate.GetComponentInChildren<TMP_Text>(true);
-        _sliderTemplate = menu.m_settingsPrefab.GetComponentInChildren<Slider>(true);
-        var settings = menu.m_settingsPrefab.GetComponent<Settings>();
-        var panelObject = settings == null ? null : AccessTools.Field(typeof(Settings), "m_settingsPanel")?.GetValue(settings) as GameObject;
-        _panelTemplate = panelObject == null ? null : panelObject.GetComponent<Image>();
-        if (_panelTemplate == null && panelObject != null) _panelTemplate = panelObject.GetComponentInChildren<Image>(true);
-        // All required resources come from the installed game, not shipped copies.
-        if (canvas == null || _fontTemplate == null || _sliderTemplate == null || _panelTemplate == null)
+        // Read fonts from inactive native resources; controls use our own geometry.
+        if (canvas == null || _fontTemplate == null)
         { ClientPlugin.Instance?.LogVoiceUiWarning("Voice settings could not find the native game UI resources."); return; }
         ResolveBodyFont(menu.m_settingsPrefab);
         if (_bodyFont == null) { ClientPlugin.Instance?.LogVoiceUiWarning("Voice settings needs a readable body font; native/OS font fallback failed."); ReleaseBodyFont(); return; }
@@ -155,41 +155,42 @@ internal sealed class VoiceSettingsPanel
         var veil = _root.AddComponent<Image>(); veil.color = new Color(0, 0, 0, .65f);
         _panel = Rect("Panel", _root.transform, 0, 0, VoicePresentation.PanelWidth, VoicePresentation.PanelHeight);
         _panel.anchorMin = _panel.anchorMax = _panel.pivot = new Vector2(.5f, .5f); _panel.anchoredPosition = Vector2.zero;
-        CopyImage(_panel.gameObject.AddComponent<Image>(), _panelTemplate);
-        Label("Voice chat", 32, 20, 490, 44, 32, new Color(1f, .79f, .35f), heading: true);
-        var iconRect = Rect("PNG microphone", _panel, 536, 22, 52, 42);
+        var panelBack = _panel.gameObject.AddComponent<Image>(); panelBack.color = new Color(.075f, .12f, .14f);
+        var topAccent = Rect("Header accent", _panel, 0, 0, VoicePresentation.PanelWidth, 2);
+        DecorativeImage(topAccent, Gold);
+        var iconRect = Rect("PNG microphone", _panel, 30, 25, 42, 34);
         _voiceImage = iconRect.gameObject.AddComponent<Image>(); _voiceImage.raycastTarget = false;
-        _voiceImage.preserveAspect = true; _voiceImage.color = new Color(1f, .79f, .35f);
-        _status = Label("", 32, 66, 556, 40, 16);
+        _voiceImage.preserveAspect = true; _voiceImage.color = Gold;
+        Label("Voice chat", 86, 20, 380, 44, 32, Gold, heading: true);
+        _enableLabel = Button("", 512, 24, 176, () => _enabled.Value = !_enabled.Value);
+        Label("Nearby voices fade naturally with distance.", 32, 70, 656, 24, 17, MutedText);
+        var statusBack = Rect("Connection status", _panel, 32, 106, 656, 40);
+        DecorativeImage(statusBack, Surface);
+        _status = Label("", 44, 106, 632, 40, 16);
         _status.textWrappingMode = TextWrappingModes.Normal;
-        _enableLabel = Button("", 32, 114, 556, () => _enabled.Value = !_enabled.Value);
-        Label("Voice mode", 32, 166, 180, 40, 20);
-        _modeLabel = Button("", 228, 166, 360, () => _mode.Value = (VoiceChatMode)(((int)_mode.Value + 1) % 3));
-        _modeHelp = Label("", 32, 210, 556, 28, 16);
-        Label("Microphone", 32, 246, 556, 24, 20);
-        _deviceLabel = Button("", 32, 274, 556, CycleDevice);
-        _deviceHelp = Label("", 32, 320, 556, 24, 15);
-        _meterText = Label("", 32, 350, 556, 22, 15);
-        var meterBack = Rect("Input meter", _panel, 32, 376, 556, 10);
-        var meterBackImage = meterBack.gameObject.AddComponent<Image>();
-        meterBackImage.color = new Color(.12f, .16f, .17f); meterBackImage.raycastTarget = false;
+        Label("VOICE MODE", 32, 160, 320, 20, 14, MutedText);
+        Label("PUSH TO TALK KEY", 372, 160, 316, 20, 14, MutedText);
+        _modeLabel = Button("", 32, 184, 320, () => _mode.Value = (VoiceChatMode)(((int)_mode.Value + 1) % 3));
+        _keyLabel = Button("", 372, 184, 316, () => { _bindingKey = true; _bindingStartedFrame = Time.frameCount; });
+        _modeHelp = Label("", 32, 232, 656, 24, 16, MutedText);
+        Label("MICROPHONE", 32, 270, 656, 20, 14, MutedText);
+        _deviceLabel = Button("", 32, 294, 656, CycleDevice);
+        _deviceHelp = Label("", 32, 342, 656, 22, 15, MutedText);
+        _meterText = Label("", 32, 370, 656, 22, 15);
+        var meterBack = Rect("Input meter", _panel, 32, 396, 656, 10);
+        DecorativeImage(meterBack, Track);
         _meterFill = Rect("Level", meterBack, 0, 0, 0, 10);
         _meterImage = _meterFill.gameObject.AddComponent<Image>(); _meterImage.raycastTarget = false;
         _thresholdMarker = Rect("Speech threshold marker", meterBack, 0, -2, 2, 14);
-        var thresholdImage = _thresholdMarker.gameObject.AddComponent<Image>();
-        thresholdImage.color = new Color(1f, .79f, .35f); thresholdImage.raycastTarget = false;
-        _captureStatus = Label("", 32, 388, 556, 40, 15);
-        _captureStatus.textWrappingMode = TextWrappingModes.Normal;
-        Label("Push to talk key", 32, 432, 180, 40, 20);
-        _keyLabel = Button("", 228, 432, 360, () => { _bindingKey = true; _bindingStartedFrame = Time.frameCount; });
-        AddSlider("Playback volume", _volume, 0, 2, "0.0", 482);
-        AddSlider("Microphone gain", _microphoneGain, 0, 3, "0.0", 542);
-        AddSlider("Speech threshold", _activationThreshold, .001f, .2f, "0.000", 602);
-        _flowCounts = Label("", 32, 662, 556, 20, 14);
-        _transportStatus = Label("", 32, 686, 556, 20, 15);
-        _playbackStatus = Label("", 32, 710, 556, 36, 15);
-        _playbackStatus.textWrappingMode = TextWrappingModes.Normal;
-        Button("Close · F8 / Esc / B", 170, 756, 280, Close);
+        DecorativeImage(_thresholdMarker, Gold);
+        _captureStatus = Label("", 32, 412, 656, 24, 15, MutedText);
+        AddSlider("Playback volume", _volume, VoiceSliderKind.Playback, 450);
+        AddSlider("Microphone gain", _microphoneGain, VoiceSliderKind.Gain, 532);
+        AddSlider("Speech threshold", _activationThreshold, VoiceSliderKind.Threshold, 614);
+        _transportStatus = Label("", 32, 700, 656, 20, 14, MutedText);
+        _playbackStatus = Label("", 32, 720, 656, 20, 14, MutedText);
+        _flowCounts = Label("", 32, 744, 420, 32, 13, MutedText);
+        Button("Close · F8 / Esc / B", 472, 756, 216, Close);
         WireNavigation();
         var group = _root.AddComponent<UIGroupHandler>(); group.m_groupPriority = 1000; group.m_defaultElement = _controls[0].gameObject;
         _nextDeviceRefresh = 0;
@@ -259,7 +260,7 @@ internal sealed class VoiceSettingsPanel
         label.font = heading ? _fontTemplate.font : _bodyFont;
         label.fontSharedMaterial = heading ? _fontTemplate.fontSharedMaterial : _bodyFont.material;
         label.richText = false;
-        label.fontSize = size; label.color = color ?? new Color(.95f, .9f, .78f); label.alignment = TextAlignmentOptions.MidlineLeft;
+        label.fontSize = size; label.color = color ?? new Color(.93f, .96f, .95f); label.alignment = TextAlignmentOptions.MidlineLeft;
         label.overflowMode = TextOverflowModes.Ellipsis; label.text = text; label.raycastTarget = false;
         return label;
     }
@@ -267,33 +268,62 @@ internal sealed class VoiceSettingsPanel
     private TMP_Text Button(string text, float x, float y, float width, Action action)
     {
         var rect = Rect("Button", _panel, x, y, width, 42);
-        var image = rect.gameObject.AddComponent<Image>(); CopyImage(image, _buttonTemplate.targetGraphic as Image);
+        var image = rect.gameObject.AddComponent<Image>(); image.color = Color.white;
         var button = rect.gameObject.AddComponent<Button>(); button.targetGraphic = image;
-        button.transition = _buttonTemplate.transition; button.colors = _buttonTemplate.colors; button.spriteState = _buttonTemplate.spriteState;
-        // Animation transitions depend on prefab animators; tint remains self-contained.
-        if (button.transition == Selectable.Transition.Animation) button.transition = Selectable.Transition.ColorTint;
+        button.transition = Selectable.Transition.ColorTint;
+        button.colors = ControlColors();
         button.onClick.AddListener(() => action()); _controls.Add(button);
-        var label = Label(text, 12, 0, width - 24, 42, 21, parent: rect); label.alignment = TextAlignmentOptions.Center;
+        var label = Label(text, 12, 0, width - 24, 42, 18, parent: rect); label.alignment = TextAlignmentOptions.Center;
         return label;
     }
 
-    private void AddSlider(string title, ConfigEntry<float> entry, float min, float max, string format, float y)
+    private static ColorBlock ControlColors() => new()
     {
-        var label = Label(title + ": " + entry.Value.ToString(format), 32, y, 556, 24, 20);
-        var rect = Rect(title, _panel, 32, y + 28, 556, 22);
-        var background = Rect("Background", rect, 0, 8, 556, 6);
-        var sourceBackground = _sliderTemplate.transform.Find("Background")?.GetComponent<Image>();
-        CopyImage(background.gameObject.AddComponent<Image>(), sourceBackground ?? _sliderTemplate.GetComponentInChildren<Image>(true));
-        var fillArea = Rect("Fill area", rect, 10, 8, 536, 6);
-        var fill = Rect("Fill", fillArea, 0, 0, 536, 6); Stretch(fill);
-        CopyImage(fill.gameObject.AddComponent<Image>(), _sliderTemplate.fillRect?.GetComponent<Image>());
-        var handleArea = Rect("Handle area", rect, 10, 0, 536, 22);
-        var handle = Rect("Handle", handleArea, 0, 0, 22, 22);
-        var handleImage = handle.gameObject.AddComponent<Image>(); CopyImage(handleImage, _sliderTemplate.handleRect?.GetComponent<Image>());
-        var slider = rect.gameObject.AddComponent<Slider>(); slider.fillRect = fill; slider.handleRect = handle;
-        slider.targetGraphic = handleImage; slider.minValue = min; slider.maxValue = max;
-        slider.colors = _sliderTemplate.colors; slider.direction = Slider.Direction.LeftToRight; slider.value = entry.Value;
-        slider.onValueChanged.AddListener(value => { entry.Value = value; label.text = title + ": " + value.ToString(format); });
+        normalColor = Surface, highlightedColor = new Color(.25f, .33f, .33f),
+        selectedColor = new Color(.29f, .37f, .36f), pressedColor = new Color(.36f, .43f, .39f),
+        disabledColor = new Color(.10f, .14f, .15f), colorMultiplier = 1f, fadeDuration = .08f
+    };
+    private static Image DecorativeImage(RectTransform rect, Color color)
+    {
+        var image = rect.gameObject.AddComponent<Image>(); image.color = color; image.raycastTarget = false; return image;
+    }
+    private void AddSlider(string title, ConfigEntry<float> entry, VoiceSliderKind kind, float y)
+    {
+        var spec = new VoiceSliderSpec(kind);
+        Label(title, 32, y, 420, 24, 20);
+        var valueLabel = Label(spec.Format(entry.Value), 500, y, 188, 24, 20, Gold);
+        valueLabel.alignment = TextAlignmentOptions.MidlineRight;
+        var rect = Rect(title, _panel, 32, y + 28, VoiceSliderSpec.Width, VoiceSliderSpec.HitHeight);
+        // The entire 44 px row accepts a click/drag. The track and fill share the
+        // same endpoints as the thumb centre; no prefab scaling or hidden offsets.
+        var hit = rect.gameObject.AddComponent<Image>(); hit.color = Color.clear;
+        var track = Rect("Track", rect, VoiceSliderSpec.Inset, 18, 632, 8);
+        DecorativeImage(track, Track);
+        var fill = Rect("Fill", track, 0, 0, 632, 8); Stretch(fill);
+        DecorativeImage(fill, new Color(.57f, .77f, .68f));
+        var handles = Rect("Thumb centres", rect, VoiceSliderSpec.Inset, 10, 632, VoiceSliderSpec.Thumb);
+        var handle = Rect("Thumb", handles, 0, 0, VoiceSliderSpec.Thumb, 0);
+        handle.pivot = new Vector2(.5f, .5f); handle.anchoredPosition = Vector2.zero;
+        // Slider drives Y anchors to 0..1. A zero height delta preserves the
+        // 24 px container height instead of doubling the thumb at runtime.
+        var handleImage = DecorativeImage(handle, Color.white);
+        var centre = Rect("Thumb centre", handle, 4, 4, 16, 16); DecorativeImage(centre, new Color(.075f, .12f, .14f));
+        var slider = rect.gameObject.AddComponent<VoiceSlider>();
+        slider.fillRect = fill; slider.handleRect = handle; slider.targetGraphic = handleImage;
+        slider.minValue = spec.Minimum; slider.maxValue = spec.Maximum; slider.Step = spec.Step;
+        slider.direction = Slider.Direction.LeftToRight;
+        slider.colors = new ColorBlock { normalColor = Gold, highlightedColor = Color.white,
+            selectedColor = Color.white, pressedColor = new Color(.57f, .77f, .68f), disabledColor = MutedText,
+            colorMultiplier = 1f, fadeDuration = .08f };
+        var initial = spec.Clamp(entry.Value); slider.SetValueWithoutNotify(initial); entry.Value = initial;
+        slider.onValueChanged.AddListener(value =>
+        {
+            var safe = spec.Clamp(value); entry.Value = safe;
+            slider.SetValueWithoutNotify(safe); valueLabel.text = spec.Format(safe);
+        });
+        Label(spec.Format(spec.Minimum), 32, y + 68, 160, 16, 12, MutedText);
+        var maximum = Label(spec.Format(spec.Maximum), 528, y + 68, 160, 16, 12, MutedText);
+        maximum.alignment = TextAlignmentOptions.MidlineRight;
         _controls.Add(slider);
     }
 
@@ -314,11 +344,4 @@ internal sealed class VoiceSettingsPanel
     }
     private static void Stretch(RectTransform rect)
     { rect.anchorMin = Vector2.zero; rect.anchorMax = Vector2.one; rect.offsetMin = rect.offsetMax = Vector2.zero; }
-    private static void CopyImage(Image target, Image source)
-    {
-        target.raycastTarget = true;
-        if (source == null) { target.color = new Color(.6f, .45f, .22f); return; }
-        target.sprite = source.sprite; target.type = source.type; target.color = source.color;
-        target.material = source.material; target.pixelsPerUnitMultiplier = source.pixelsPerUnitMultiplier;
-    }
 }

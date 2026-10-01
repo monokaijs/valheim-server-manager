@@ -5,6 +5,7 @@ using Xunit;
 
 namespace ValheimServerManager.Plugin.Tests;
 
+[Collection("Voice Unity fixture")]
 public sealed class VoiceChatClientTests : IDisposable
 {
     private readonly VoiceChatClient _client = new();
@@ -40,6 +41,7 @@ public sealed class VoiceChatClientTests : IDisposable
         using var receiver = new VoiceChatClient();
         foreach (var packet in _sent)
             receiver.Receive(Convert.ToBase64String(VoiceCodec.Relay(42, 1, 2, 3, Convert.FromBase64String(packet))), 40, 1);
+        receiver.Receive(Relay(), 40, 1);
         var source = GameObject.Objects.Single().Source;
         Assert.True(source.isPlaying);
         var output = new float[1280]; source.clip.Callback(output);
@@ -172,7 +174,7 @@ public sealed class VoiceChatClientTests : IDisposable
         Assert.True(first.Destroyed); Assert.Equal(["first"], Microphone.EndDevices);
         Assert.False(_client.MicrophoneUnavailable);
         Assert.Equal(["first", "second"], Microphone.StartDevices);
-        _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
+        _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
         var playback = GameObject.Objects.Single();
         _client.Reset(); _client.Reset();
         Assert.Equal(2, Microphone.Ends); Assert.True(Microphone.LastStarted!.Destroyed);
@@ -326,22 +328,22 @@ public sealed class VoiceChatClientTests : IDisposable
     {
         _client.Receive("not base64", 40, 1); Assert.Equal(1, _client.InvalidPackets);
         _client.Receive(new string('x', 901), 40, 1); Assert.Equal(2, _client.InvalidPackets);
-        _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
+        _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
         var source = GameObject.Objects.Single().Source;
-        Assert.Equal(4, _client.ReceivedFrames); Assert.Equal(2, _client.DecodedFrames);
+        Assert.Equal(5, _client.ReceivedFrames); Assert.Equal(3, _client.DecodedFrames);
         Assert.Equal(1, _client.PlaybackStarts); Assert.Equal(0, _client.OutputSamples);
-        source.clip.Callback(new float[1400]);
-        Assert.Equal(1280, _client.OutputSamples); Assert.Equal(1, _client.Underruns);
+        source.clip.Callback(new float[640]); source.clip.Callback(new float[1400]);
+        Assert.Equal(1920, _client.OutputSamples); Assert.Equal(1, _client.Underruns);
     }
 
     [Fact]
     public void PlaybackExceptionCleansUpAndNextFrameCanRecover()
     {
         _client.Receive(Relay(), 40, 1);
-        AudioSource.PlayThrows = true; _client.Receive(Relay(), 40, 1);
+        AudioSource.PlayThrows = true; _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
         Assert.Equal(1, _client.PlaybackFailures); Assert.Contains("check output", _client.PlaybackStatus);
         Assert.True(GameObject.Objects[0].Destroyed); Assert.True(GameObject.Objects[0].Source.clip.Destroyed);
-        AudioSource.PlayThrows = false; _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
+        AudioSource.PlayThrows = false; _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
         Assert.True(GameObject.Objects[1].Source.isPlaying);
     }
 
@@ -352,7 +354,7 @@ public sealed class VoiceChatClientTests : IDisposable
         AudioClip.CreateFails = true; _client.Receive(Relay(), 40, 1);
         Assert.Equal(1, _client.PlaybackFailures); Assert.Equal(0, _client.DecodedFrames);
         Assert.True(GameObject.Objects.Single().Destroyed); Assert.Contains("check output", _client.PlaybackStatus);
-        AudioClip.CreateFails = false; _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
-        Assert.Equal(2, _client.DecodedFrames); Assert.True(GameObject.Objects.Last().Source.isPlaying);
+        AudioClip.CreateFails = false; _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1); _client.Receive(Relay(), 40, 1);
+        Assert.Equal(3, _client.DecodedFrames); Assert.True(GameObject.Objects.Last().Source.isPlaying);
     }
 }
