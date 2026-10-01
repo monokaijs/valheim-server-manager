@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.7.7
 
 - Prevent ordinary voice RPC batches from losing frames while retaining the 25-frame/s sustained limit and a bounded burst.
 - Catch up microphone frames at low rendering rates, buffer received voice for jitter, and re-prime/fade after starvation without repeating old speech.
