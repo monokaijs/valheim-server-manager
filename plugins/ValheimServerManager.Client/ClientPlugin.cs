@@ -594,6 +594,7 @@ public sealed partial class ClientPlugin : BaseUnityPlugin
                 if (!ReferenceEquals(rpc, Instance?._serverRpc)) return;
                 Instance._serverVoiceEnabled = enabled;
                 Instance._serverVoiceRange = Mathf.Clamp(range, 5f, 100f);
+                Instance._voiceChat?.SetPlaybackRange(Instance._serverVoiceRange);
                 Instance._serverVoicePolicyReceived = true;
             });
             __0.m_rpc.Register<string>("VSM_VoiceFrame", (rpc, encoded) =>

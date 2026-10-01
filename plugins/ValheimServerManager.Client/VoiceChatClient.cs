@@ -1,3 +1,4 @@
+#nullable disable
 using System;
 using System.Collections.Generic;
 using UnityEngine;
@@ -11,15 +12,23 @@ internal sealed class VoiceChatClient : IDisposable
 {
     // Unity 6 also exposes a Span overload that cannot be resolved by this net48 plugin.
     private static readonly Func<AudioClip, float[], int, bool> ReadMicrophone = CreateReader();
+    private const float CaptureTimeout = 2f;
+    private const float ReadFailureTimeout = .5f;
+    private const float RetryDelay = 3f;
     private AudioClip _microphoneClip;
     private string _requestedDevice;
     private string _activeDevice;
     private int _readPosition;
+    private int _lastCapturePosition;
+    private float _lastCaptureProgressAt;
+    private float _readFailureAt = -1f;
+    private bool _ownsMicrophone;
+    private bool _microphoneUnavailable;
     private float _retryAt;
     private float _voiceGateUntil;
-    private float _lastSentAt;
+    private float _lastSentAt = float.NegativeInfinity;
     private readonly Dictionary<long, Playback> _playbacks = new();
-    internal bool MicrophoneUnavailable => ReadMicrophone == null || Time.unscaledTime < _retryAt;
+    internal bool MicrophoneUnavailable => ReadMicrophone == null || _microphoneUnavailable;
     internal bool Transmitting => _microphoneClip != null && Time.unscaledTime - _lastSentAt < .2f;
 
     internal void Tick(bool active, VoiceChatMode mode, KeyCode pushToTalk, string inputDevice, float microphoneGain,
@@ -31,6 +40,7 @@ internal sealed class VoiceChatClient : IDisposable
             StopMicrophone();
             _requestedDevice = inputDevice;
             _retryAt = 0f;
+            _microphoneUnavailable = false;
         }
         foreach (var playback in _playbacks.Values) playback.Volume = volume;
         var expired = new List<long>();
@@ -50,35 +60,74 @@ internal sealed class VoiceChatClient : IDisposable
             {
                 var devices = Microphone.devices;
                 if (devices == null || devices.Length == 0 || inputDevice != null
-                    && Array.IndexOf(devices, inputDevice) < 0) { _retryAt = Time.unscaledTime + 3f; return; }
+                    && Array.IndexOf(devices, inputDevice) < 0) { FailMicrophone(); return; }
                 _activeDevice = inputDevice;
+                _ownsMicrophone = true;
                 _microphoneClip = Microphone.Start(_activeDevice, true, 1, VoiceCodec.SampleRate);
                 _readPosition = 0;
-                if (_microphoneClip == null) { _activeDevice = null; _retryAt = Time.unscaledTime + 3f; }
+                _lastCapturePosition = 0;
+                _lastCaptureProgressAt = Time.unscaledTime;
+                if (_microphoneClip == null || _microphoneClip.channels < 1 || _microphoneClip.channels > 32
+                    || _microphoneClip.samples < VoiceCodec.FrameSamples * 2 || _microphoneClip.frequency != VoiceCodec.SampleRate)
+                    FailMicrophone();
             }
-            catch (Exception) { _activeDevice = null; _retryAt = Time.unscaledTime + 3f; }
+            catch (Exception) { FailMicrophone(); }
             return;
         }
         try
         {
             var current = Microphone.GetPosition(_activeDevice);
-            if (current < 0) return;
-            var available = (current - _readPosition + VoiceCodec.SampleRate) % VoiceCodec.SampleRate;
-            if (available > VoiceCodec.SampleRate / 2)
+            var capacity = _microphoneClip.samples;
+            if (current < 0 || current >= capacity)
             {
-                _readPosition = (current - VoiceCodec.FrameSamples + VoiceCodec.SampleRate) % VoiceCodec.SampleRate;
+                _microphoneUnavailable = true;
+                if (Time.unscaledTime - _lastCaptureProgressAt >= CaptureTimeout) FailMicrophone();
+                return;
+            }
+            if (current != _lastCapturePosition)
+            {
+                _lastCapturePosition = current;
+                _lastCaptureProgressAt = Time.unscaledTime;
+            }
+            else if (Time.unscaledTime - _lastCaptureProgressAt >= CaptureTimeout)
+            {
+                FailMicrophone();
+                return;
+            }
+            var available = (current - _readPosition + capacity) % capacity;
+            if (available > capacity / 2)
+            {
+                _readPosition = (current - VoiceCodec.FrameSamples + capacity) % capacity;
                 available = VoiceCodec.FrameSamples;
             }
+            var channels = _microphoneClip.channels;
             for (var count = 0; available >= VoiceCodec.FrameSamples && count < 2; count++)
             {
+                // Unity offsets/positions count sample frames; GetData returns interleaved
+                // channel values. Read a full frame per channel before downmixing to mono.
+                var interleaved = new float[VoiceCodec.FrameSamples * channels];
+                if (!ReadMicrophone(_microphoneClip, interleaved, _readPosition))
+                {
+                    _microphoneUnavailable = true;
+                    if (_readFailureAt < 0f) _readFailureAt = Time.unscaledTime;
+                    if (Time.unscaledTime - _readFailureAt >= ReadFailureTimeout) FailMicrophone();
+                    break;
+                }
+                _readFailureAt = -1f;
+                _microphoneUnavailable = false;
                 var samples = new float[VoiceCodec.FrameSamples];
-                if (!ReadMicrophone(_microphoneClip, samples, _readPosition)) break;
-                _readPosition = (_readPosition + VoiceCodec.FrameSamples) % VoiceCodec.SampleRate;
+                _readPosition = (_readPosition + VoiceCodec.FrameSamples) % capacity;
                 available -= VoiceCodec.FrameSamples;
                 var energy = 0f;
                 for (var index = 0; index < samples.Length; index++)
                 {
-                    samples[index] = Mathf.Clamp(samples[index] * microphoneGain, -1f, 1f);
+                    var mixed = 0f;
+                    for (var channel = 0; channel < channels; channel++)
+                    {
+                        var value = interleaved[index * channels + channel];
+                        if (Finite(value)) mixed += Mathf.Clamp(value, -1f, 1f) / channels;
+                    }
+                    samples[index] = Mathf.Clamp(mixed * (Finite(microphoneGain) ? microphoneGain : 1f), -1f, 1f);
                     energy += samples[index] * samples[index];
                 }
                 if (mode == VoiceChatMode.VoiceActivation)
@@ -93,9 +142,15 @@ internal sealed class VoiceChatClient : IDisposable
         }
         catch (Exception)
         {
-            StopMicrophone();
-            _retryAt = Time.unscaledTime + 3f;
+            FailMicrophone();
         }
+    }
+
+    internal void SetPlaybackRange(float range)
+    {
+        foreach (var playback in _playbacks.Values)
+            try { playback.Range = range; }
+            catch (Exception) { /* A destroyed audio source must not abort a policy RPC. */ }
     }
 
     internal void Receive(string encoded, float range, float volume)
@@ -112,6 +167,7 @@ internal sealed class VoiceChatClient : IDisposable
                 playback = new Playback(sender, range);
                 _playbacks.Add(sender, playback);
             }
+            playback.Range = range;
             playback.Add(frame, new Vector3(x, y, z), volume);
         }
         catch (Exception) { /* A failed audio device should not abort the game RPC loop. */ }
@@ -119,14 +175,26 @@ internal sealed class VoiceChatClient : IDisposable
 
     private void StopMicrophone()
     {
-        if (_microphoneClip == null) return;
-        try { Microphone.End(_activeDevice); } catch (Exception) { }
-        UnityEngine.Object.Destroy(_microphoneClip);
+        var clip = _microphoneClip;
         _microphoneClip = null;
+        if (_ownsMicrophone) { try { Microphone.End(_activeDevice); } catch (Exception) { } }
+        _ownsMicrophone = false;
+        if (clip != null) { try { UnityEngine.Object.Destroy(clip); } catch (Exception) { } }
         _activeDevice = null;
         _readPosition = 0;
+        _readFailureAt = -1f;
         _voiceGateUntil = 0f;
+        _lastSentAt = float.NegativeInfinity;
     }
+
+    private void FailMicrophone()
+    {
+        StopMicrophone();
+        _microphoneUnavailable = true;
+        _retryAt = Time.unscaledTime + RetryDelay;
+    }
+
+    private static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 
     internal void Reset()
     {
@@ -134,7 +202,7 @@ internal sealed class VoiceChatClient : IDisposable
         foreach (var playback in _playbacks.Values) playback.Dispose();
         _playbacks.Clear();
         _retryAt = 0f;
-        _lastSentAt = 0f;
+        _microphoneUnavailable = false;
     }
 
     public void Dispose() => Reset();
@@ -158,7 +226,8 @@ internal sealed class VoiceChatClient : IDisposable
         private readonly AudioSource _source;
         private readonly AudioClip _clip;
         internal float LastFrameAt { get; private set; }
-        internal float Volume { set => _source.volume = Mathf.Clamp(value, 0f, 2f); }
+        internal float Volume { set { if (Finite(value)) _source.volume = Mathf.Clamp(value, 0f, 2f); } }
+        internal float Range { set { if (Finite(value)) _source.maxDistance = Mathf.Clamp(value, 5f, 100f); } }
 
         internal Playback(long sender, float range)
         {
@@ -167,7 +236,9 @@ internal sealed class VoiceChatClient : IDisposable
             _source.spatialBlend = 1f;
             _source.rolloffMode = AudioRolloffMode.Linear;
             _source.minDistance = 2f;
-            _source.maxDistance = Mathf.Clamp(range, 5f, 100f);
+            _source.maxDistance = 40f;
+            _source.volume = 1f;
+            Range = range;
             _source.dopplerLevel = 0f;
             _source.loop = true;
             _clip = AudioClip.Create("VSM Voice Stream", VoiceCodec.SampleRate, 1, VoiceCodec.SampleRate, true, Read);
