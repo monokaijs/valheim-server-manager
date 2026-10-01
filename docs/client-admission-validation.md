@@ -41,3 +41,35 @@ Deployment requires building/installing the updated server plugin and restarting
 the server through an approved release/deployment process. Existing 2.7.3 clients
 can use this fix. No release, tag, client republish, production restart, microphone
 permission change or live multiplayer validation is part of this source change.
+
+## Authentication grace correction after 2.7.5
+
+Read-only deployment inspection confirmed the running 2.7.5 image and the
+BepInEx-loaded Server Manager 2.7.5 DLL. The deployed DLL matched the image build
+output (SHA256 `f3b940e37d434bd354584ad12863ac6317b56f34097aa6b69bb8775eafc02e6c`),
+and decompilation confirmed deferred-hello processing before admission and
+requirement-specific cancellation. The public 2.7.5 client DLL advertises and
+sends 2.7.5; the character protocol minimum remains 2.7.2.
+
+A subsequent failed connection never reached native authenticated PeerInfo.
+The server logged its socket connection at 08:09:05 on 2026-10-01, then the
+missing-runtime warning for an unnamed peer at 08:09:25 and kick at 08:09:28.
+The old requirement timer started at socket connection and could reject UID 0,
+even if a valid capability hello was deferred awaiting native authentication.
+Two production-method regressions reproduced this with and without an early hello.
+This explains the premature rejection; it does not establish why native
+PeerInfo did not finish. Client startup/failed-attempt logs are still required.
+Server debug logging was disabled, so a missing deferred-hello debug line does
+not prove the client sent no hello.
+
+Character and required-mod grace now starts on the connection's first observed
+nonzero authenticated UID. Native password/authentication waits do not create
+VSM admission state or consume this grace. Repeated admission does not extend
+the timer; disconnect removes the connection's clock. Requirement enforcement
+also observes authenticated IDs so a missing admission hook cannot disable
+its eventual checks. Deferred hellos survive the wait; unsupported clients and
+missing mod receipts still hold world admission and are rejected after grace.
+Native authentication and all existing server-owned-character protections remain
+required. This correction requires an updated server plugin; the 2.7.5 client
+protocol is compatible. No server restart, configuration edit, release or
+live-session validation was performed for this correction.

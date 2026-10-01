@@ -13,7 +13,7 @@ public sealed partial class ServerPlugin
         _characterProfileSent = new(), _pendingCharacterProfiles = new(),
         _characterEnforcementHandled = new(), _inspectionEnforcementHandled = new();
     private readonly Dictionary<long, DateTime> _joined = new();
-    private readonly Dictionary<ZNetPeer, DateTime> _peerConnectedAt = new();
+    private readonly Dictionary<ZNetPeer, DateTime> _peerAuthenticatedAt = new();
     private readonly PendingClientHellos<ZNetPeer> _pendingPeerHellos = new();
     private readonly Dictionary<ZNetPeer, string> _modReceipts = new();
     private readonly Dictionary<long, ScheduledKick> _scheduledKicks = new();
@@ -30,8 +30,7 @@ public sealed partial class ServerPlugin
     {
         var peer = new ZNetPeer { m_uid = uid, m_playerName = "synthetic player" };
         ZNet.instance.Peers.Add(peer);
-        _peerConnectedAt[peer] = DateTime.UtcNow.AddSeconds(-21);
-        if (uid != 0) SetReceipt(peer);
+        if (uid != 0) { AgeAdmission(peer); SetReceipt(peer); }
         return peer;
     }
     internal void Authenticate(ZNetPeer peer, long uid, bool receipt = true)
@@ -39,6 +38,10 @@ public sealed partial class ServerPlugin
         peer.m_uid = uid;
         if (receipt) SetReceipt(peer);
     }
+    internal void AgeAdmission(ZNetPeer peer) => _peerAuthenticatedAt[peer] = DateTime.UtcNow.AddSeconds(-21);
+    internal bool GraceExpired(ZNetPeer peer) => AdmissionGraceExpired(peer);
+    internal DateTime? AdmissionStarted(ZNetPeer peer) => _peerAuthenticatedAt.TryGetValue(peer, out var time) ? time : null;
+    internal void ForgetAdmission(ZNetPeer peer) => _peerAuthenticatedAt.Remove(peer);
     internal void SetReceipt(ZNetPeer peer) => _modReceipts[peer] = _requiredModRevision;
     internal void Hello(ZNetPeer peer, bool allowed, string version) => ClientHelloForPeer(ZNet.instance, peer, peer.m_rpc, allowed, version);
     internal bool Admit(ZNetPeer peer) => CompleteAuthenticatedPeerAdmission(peer, true);

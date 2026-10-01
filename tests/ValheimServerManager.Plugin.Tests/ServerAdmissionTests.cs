@@ -7,6 +7,88 @@ namespace ValheimServerManager.Plugin.Tests;
 
 public sealed class ServerAdmissionTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PreAuthenticationDelayCannotTriggerMissingRuntimeKick(bool sendsHello)
+    {
+        var server = new ServerPlugin();
+        var peer = server.AddPeer(0);
+        peer.m_playerName = "";
+        if (sendsHello) server.Hello(peer, true, "2.7.5");
+        server.Enforce();
+        server.Enforce();
+        Assert.False(server.HasKick(peer));
+        Assert.False(server.CharacterCapable(peer));
+        Assert.Equal(0, server.ProfileSends);
+    }
+
+    [Fact]
+    public void EnforcementStillStartsBoundedGraceIfAdmissionHookIsUnavailable()
+    {
+        var server = new ServerPlugin();
+        var peer = server.AddPeer(0);
+        server.Authenticate(peer, 42);
+        server.Enforce();
+        Assert.NotNull(server.AdmissionStarted(peer));
+        Assert.False(server.HasKick(peer));
+        server.AgeAdmission(peer);
+        server.Enforce();
+        Assert.True(server.HasKick(peer));
+        Assert.False(server.CharacterCapable(peer));
+        Assert.False(server.JoinedPeer(peer));
+    }
+
+    [Fact]
+    public void AuthenticationStartsFullGraceAndRepeatedAdmissionDoesNotExtendIt()
+    {
+        var server = new ServerPlugin();
+        var peer = server.AddPeer(0);
+        Assert.False(server.Admit(peer));
+        Assert.Null(server.AdmissionStarted(peer));
+        Assert.False(server.GraceExpired(peer));
+        server.Authenticate(peer, 42, receipt: false);
+        Assert.True(server.Admit(peer));
+        var started = server.AdmissionStarted(peer);
+        Assert.NotNull(started);
+        server.Enforce();
+        Assert.False(server.HasKick(peer));
+        Assert.True(server.Admit(peer));
+        Assert.Equal(started, server.AdmissionStarted(peer));
+        server.AgeAdmission(peer);
+        var expired = server.AdmissionStarted(peer);
+        Assert.True(server.Admit(peer));
+        Assert.Equal(expired, server.AdmissionStarted(peer));
+        Assert.True(server.GraceExpired(peer));
+        server.Enforce();
+        Assert.True(server.HasKick(peer));
+        Assert.False(server.JoinedPeer(peer));
+    }
+
+    [Fact]
+    public void DeferredHelloSurvivesAuthenticationWaitAndReconnectGetsFreshGrace()
+    {
+        var server = new ServerPlugin();
+        var peer = server.AddPeer(0);
+        server.Hello(peer, true, "2.7.5");
+        server.Enforce();
+        Assert.False(server.HasKick(peer));
+        Assert.False(server.Admit(peer));
+        server.Authenticate(peer, 42);
+        Assert.False(server.Admit(peer));
+        Assert.True(server.CharacterCapable(peer));
+        Assert.True(server.JoinedPeer(peer));
+        server.AgeAdmission(peer);
+        server.ForgetAdmission(peer);
+        server.ForgetPending(peer);
+        var reconnected = server.AddPeer(0);
+        server.Authenticate(reconnected, 99);
+        Assert.True(server.Admit(reconnected));
+        Assert.False(server.GraceExpired(reconnected));
+        Assert.False(server.CharacterCapable(reconnected));
+        Assert.Null(server.AdmissionStarted(peer));
+    }
+
     [Fact]
     public void EarlyHelloCompletesAfterAuthenticatedIdBeforeAdmissionIsTested()
     {
@@ -37,7 +119,8 @@ public sealed class ServerAdmissionTests
         var server = new ServerPlugin();
         var peer = server.AddPeer(0);
         server.Hello(peer, true, "2.7.3");
-        Assert.True(server.Admit(peer));
+        Assert.False(server.Admit(peer));
+        Assert.Null(server.AdmissionStarted(peer));
         Assert.False(server.CharacterCapable(peer));
         Assert.Equal(0, server.ProfileSends);
         server.Authenticate(peer, 42);
@@ -56,6 +139,7 @@ public sealed class ServerAdmissionTests
         server.Authenticate(peer, 42);
         Assert.True(server.Admit(peer));
         Assert.False(server.CharacterCapable(peer));
+        server.AgeAdmission(peer);
         server.Enforce();
         Assert.True(server.HasKick(peer));
     }

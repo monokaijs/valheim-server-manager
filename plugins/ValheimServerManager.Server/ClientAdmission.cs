@@ -8,10 +8,24 @@ namespace ValheimServerManager.Server;
 // loading and RPC transport remain supplied by the real server runtime.
 public sealed partial class ServerPlugin
 {
+    private bool BeginAuthenticatedAdmission(ZNetPeer peer)
+    {
+        if (peer == null || peer.m_uid == 0) return false;
+        if (!_peerAuthenticatedAt.ContainsKey(peer))
+        {
+            _peerAuthenticatedAt[peer] = DateTime.UtcNow;
+            Logger.LogInfo($"Authenticated VSM admission started for peer {peer.m_uid}.");
+        }
+        return true;
+    }
+
+    private bool AdmissionGraceExpired(ZNetPeer peer) => BeginAuthenticatedAdmission(peer)
+        && DateTime.UtcNow - _peerAuthenticatedAt[peer] >= TimeSpan.FromSeconds(_clientGraceSeconds.Value);
+
     private void EnforceServerCharacterClients()
     {
         if (DateTime.UtcNow < _policyGraceUntil) return;
-        foreach (var peer in ZNet.instance.GetPeers().Where(peer => peer != null && _peerConnectedAt.TryGetValue(peer, out var connectedAt) && DateTime.UtcNow - connectedAt > TimeSpan.FromSeconds(_clientGraceSeconds.Value) && !_serverCharacterClients.Contains(peer.m_uid) && !_characterEnforcementHandled.Contains(peer.m_uid) && !_scheduledKicks.ContainsKey(peer.m_uid)).ToArray())
+        foreach (var peer in ZNet.instance.GetPeers().Where(peer => AdmissionGraceExpired(peer) && !_serverCharacterClients.Contains(peer.m_uid) && !_characterEnforcementHandled.Contains(peer.m_uid) && !_scheduledKicks.ContainsKey(peer.m_uid)).ToArray())
         {
             _characterEnforcementHandled.Add(peer.m_uid);
             var reason = "A compatible Server Manager client runtime is required for server-owned characters.";
@@ -96,6 +110,9 @@ public sealed partial class ServerPlugin
 
     private bool CompleteAuthenticatedPeerAdmission(ZNetPeer peer, bool buffering)
     {
+        // A skipped/rejected native PeerInfo (including another mod's delay) must
+        // not create admission state or consume a socket's authentication wait.
+        if (!BeginAuthenticatedAdmission(peer)) return false;
         // RPC_PeerInfo has assigned the authenticated ID. Consume an early hello
         // before testing the same capability that keeps world admission closed.
         CompletePendingClientHello(peer);

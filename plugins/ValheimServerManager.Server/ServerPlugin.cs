@@ -34,7 +34,7 @@ public sealed partial class ServerPlugin : BaseUnityPlugin
     private readonly ConcurrentQueue<Action> _mainThread = new();
     private readonly ConcurrentQueue<string> _outgoing = new();
     private readonly Dictionary<long, DateTime> _joined = new();
-    private readonly Dictionary<ZNetPeer, DateTime> _peerConnectedAt = new();
+    private readonly Dictionary<ZNetPeer, DateTime> _peerAuthenticatedAt = new();
     private readonly Dictionary<ZRpc, ZNetPeer> _peersByRpc = new();
     private readonly Dictionary<long, bool> _companions = new();
     private readonly HashSet<long> _serverCharacterClients = new();
@@ -629,17 +629,10 @@ public sealed partial class ServerPlugin : BaseUnityPlugin
         if (string.IsNullOrEmpty(_requiredModRevision)) return;
         foreach (var peer in ZNet.instance.GetPeers().ToArray())
         {
-            if (peer == null || !_peerConnectedAt.TryGetValue(peer, out var connectedAt)
-                || DateTime.UtcNow - connectedAt < TimeSpan.FromSeconds(_clientGraceSeconds.Value)
+            if (!AdmissionGraceExpired(peer)
                 || (_modReceipts.TryGetValue(peer, out var receipt) && receipt == _requiredModRevision)
-                || (peer.m_uid != 0 && (_scheduledKicks.ContainsKey(peer.m_uid) || !_modEnforcementHandled.Add(peer.m_uid)))) continue;
+                || _scheduledKicks.ContainsKey(peer.m_uid) || !_modEnforcementHandled.Add(peer.m_uid)) continue;
             const string reason = "This realm only permits its listed mod versions. Install required packages and remove unlisted packages in your external mod manager, then restart Valheim and reconnect. Listed optional packages may be omitted.";
-            if (peer.m_uid == 0)
-            {
-                InvokePeer(peer, "VSM_AdminNotice", "Required mods not ready", reason);
-                DisconnectPeer(peer);
-                continue;
-            }
             ScheduleKick(peer, "Required mods not ready", reason, reason, "mods.client.required");
             if (_scheduledKicks.TryGetValue(peer.m_uid, out var kick)) kick.ModRequirement = true;
         }
@@ -919,7 +912,6 @@ public sealed partial class ServerPlugin : BaseUnityPlugin
     internal void RegisterPeerProtocol(ZNet znet, ZNetPeer peer)
     {
         if (znet == null || peer?.m_rpc == null) return;
-        _peerConnectedAt[peer] = DateTime.UtcNow;
         _peersByRpc[peer.m_rpc] = peer;
         peer.m_rpc.Register<string>("VSM_ModReceipt", (rpc, revision) =>
         {
@@ -1020,7 +1012,7 @@ public sealed partial class ServerPlugin : BaseUnityPlugin
         if (peer == null) return;
         _pendingPeerHellos.Remove(peer);
         ForgetMapPeer(peer);
-        _peerConnectedAt.Remove(peer);
+        _peerAuthenticatedAt.Remove(peer);
         if (peer.m_rpc != null) _peersByRpc.Remove(peer.m_rpc);
         PeerInfoPatch.Discard(peer);
         _modReceipts.Remove(peer);
