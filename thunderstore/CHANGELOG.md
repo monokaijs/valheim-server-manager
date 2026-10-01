@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.7.6
 
 - Use transparent PNG voice icons; show the HUD only during speech, with waves following input loudness.
 - Redesign F8 voice settings with a regular body font, heading-only Valheim styling, input meter, clipping warnings and capture/transport/output status.
