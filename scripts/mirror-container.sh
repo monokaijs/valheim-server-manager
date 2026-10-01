@@ -2,6 +2,9 @@
 # Mirror an already-published public GHCR image; never build or create a release.
 set -euo pipefail
 
+# Publishing always targets the user-approved account and project repository.
+DOCKERHUB_IMAGE=monokaijs/valheim-server-manager
+
 fail() { echo "$1" >&2; exit 1; }
 
 if [[ ! "${RELEASE_VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -12,9 +15,6 @@ if [[ ! "${IMAGE_DIGEST:-}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
 fi
 if [[ ! "${GITHUB_REPOSITORY:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
   fail 'A GitHub owner/repository is required.'
-fi
-if [[ ! "${DOCKERHUB_IMAGE:-}" =~ ^[a-z0-9][a-z0-9_-]*/[a-z0-9]+([._-][a-z0-9]+)*$ || ${#DOCKERHUB_IMAGE} -gt 255 ]]; then
-  fail 'Docker Hub image must be an approved lowercase namespace/repository.'
 fi
 UPDATE_LATEST=${UPDATE_LATEST:-false}
 if [[ "$UPDATE_LATEST" != true && "$UPDATE_LATEST" != false ]]; then

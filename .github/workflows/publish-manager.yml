@@ -162,7 +162,6 @@ jobs:
 
   publish-dockerhub:
     name: Mirror container to Docker Hub
-    if: ${{ vars.DOCKERHUB_ENABLED == 'true' }}
     needs: [release, publish-container]
     uses: ./.github/workflows/mirror-dockerhub.yml
     with:
@@ -170,7 +169,6 @@ jobs:
       digest: ${{ needs.publish-container.outputs.digest }}
       update_latest: true
     secrets:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   create-release:

@@ -14,8 +14,6 @@ on:
         default: false
         type: boolean
     secrets:
-      DOCKERHUB_USERNAME:
-        required: true
       DOCKERHUB_TOKEN:
         required: true
   workflow_dispatch:
@@ -44,7 +42,6 @@ concurrency:
 
 jobs:
   mirror:
-    if: ${{ vars.DOCKERHUB_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -52,15 +49,13 @@ jobs:
           persist-credentials: false
       - name: Verify mirror safety checks
         run: python3 -m unittest discover -s tests -p test_mirror_container.py
-      - name: Check approved Docker Hub configuration
+      - name: Check Docker Hub token is configured
         env:
-          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ -z "$DOCKERHUB_IMAGE" || -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
-            echo 'Docker Hub image, username and manually managed write PAT must be configured.' >&2
+          if [[ -z "$DOCKERHUB_TOKEN" ]]; then
+            echo 'DOCKERHUB_TOKEN must contain the manually managed write PAT for monokaijs.' >&2
             exit 1
           fi
       - name: Install registry copy tool
@@ -70,14 +65,13 @@ jobs:
       - name: Sign in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: monokaijs
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Copy the published image without rebuilding
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           IMAGE_DIGEST: ${{ inputs.digest }}
           UPDATE_LATEST: ${{ inputs.update_latest }}
-          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
         run: |
           export REGISTRY_AUTH_FILE="$HOME/.docker/config.json"
           bash scripts/mirror-container.sh
